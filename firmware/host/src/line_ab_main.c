@@ -120,6 +120,13 @@ static float metric_out(const metrics_t *m)
     return (m->tick_n > 0) ? (float)m->out_n / (float)m->tick_n : 0.0f;
 }
 
+static void start_pose(const scenario_t *sc, float *x0, float *y0)
+{
+    /* Start on a crest: the line sits under the array with zero local slope. */
+    *x0 = 0.25f * sc->wavelength_m;
+    *y0 = sc->amp_m + sc->offset_m;
+}
+
 static void apply_scenario(nncar_sim_t *s, const scenario_t *sc, uint32_t seed)
 {
     nncar_sim_seed(s, seed);
@@ -138,36 +145,54 @@ static void apply_scenario(nncar_sim_t *s, const scenario_t *sc, uint32_t seed)
 }
 
 /*
- * Host-side oracle: pure pursuit on the ground-truth track plus a
- * curvature-limited speed policy. It sees the true pose, so it is only a
- * teacher / upper bound, never a shipped controller.
+ * Host-side oracle: Stanley-style path tracking on the ground-truth track,
+ * with a curvature feedforward and a curvature-limited speed policy. It sees
+ * the true pose, so it is only a teacher / upper bound, never a shipped
+ * controller. The same kinematic envelope as the shipped path is applied.
  */
+static float k_oracle_ke = 80.0f;     /* 1/m^2, lateral error gain */
+static float k_oracle_ktheta = 10.0f; /* 1/m, heading error gain */
+static float k_oracle_alat = 0.85f;   /* fraction of a_lat_max for the speed cap */
+static bool k_trace = false;
+static int k_trace_index = -1;
+
 static void oracle_cmd(const nncar_profile_t *p, const nncar_sim_t *s,
-                       float v_desired, float v_max_eff, float *v_out,
-                       float *omega_out, float *kappa_out)
+                       float v_desired, float v_max_eff, nncar_twist_t *out,
+                       float *kappa_out)
 {
-    const float lookahead = fmaxf(0.25f, 0.45f * fmaxf(v_desired, 0.3f));
-    const float x_p = s->x + lookahead;
-    const float y_p = nncar_sim_track_y(x_p, s);
+    const float amp = s->track_amp_m;
+    const float w = 2.0f * NNCAR_PI / s->track_wavelength_m;
 
-    const float dx = x_p - s->x;
-    const float dy = y_p - s->y;
-    const float fwd = dx * cosf(s->theta) + dy * sinf(s->theta);
-    const float left = -dx * sinf(s->theta) + dy * cosf(s->theta);
-    const float dist = sqrtf(fwd * fwd + left * left);
+    const float y_p = amp * sinf(w * s->x);
+    const float yp = amp * w * cosf(w * s->x);
+    const float ypp = -amp * w * w * sinf(w * s->x);
 
-    float kappa = 0.0f;
-    if (dist > 1.0e-4f) {
-        kappa = 2.0f * sinf(atan2f(left, fwd)) / dist;
+    const float theta_path = atanf(yp);
+    const float e_lat = s->y - y_p;   /* + = vehicle left of the line */
+
+    float dtheta = theta_path - s->theta;
+    while (dtheta > NNCAR_PI) {
+        dtheta -= 2.0f * NNCAR_PI;
+    }
+    while (dtheta < -NNCAR_PI) {
+        dtheta += 2.0f * NNCAR_PI;
     }
 
+    const float kappa_path = ypp / powf(1.0f + yp * yp, 1.5f);
+    const float kappa = kappa_path - k_oracle_ke * e_lat + k_oracle_ktheta * dtheta;
+
+    /* Speed policy on the *commanded* curvature, so it also slows for large
+     * corrective steering. A student can learn this from the line offset. */
     float v = fminf(v_desired, v_max_eff);
-    if (fabsf(kappa) > 1.0e-4f) {
-        v = fminf(v, sqrtf(0.8f * p->a_lat_max_mps2 / fabsf(kappa)));
-    }
+    const float kabs = fmaxf(fabsf(kappa), 1.0e-4f);
+    v = fminf(v, sqrtf(k_oracle_alat * p->a_lat_max_mps2 / kabs));
+    v = fmaxf(v, fminf(v_desired, 0.30f));
 
-    *v_out = v;
-    *omega_out = kappa * v;
+    nncar_twist_t twist;
+    twist.v = v;
+    twist.omega = kappa * v;
+
+    *out = nncar_twist_envelope(p, twist, v_max_eff);
     *kappa_out = kappa;
 }
 
@@ -191,21 +216,24 @@ static void encoder_update(const nncar_profile_t *p, nncar_velocity_t *vel_l,
     *edges = (dl != 0) || (dr != 0);
 }
 
+/* One binary row: 68 float32 inputs followed by s_v and kappa_norm. */
+#define DUMP_ROW 70
+
 static void dump_pair(FILE *dump, const nncar_profile_t *p,
                       const nncar_gray_frame_t *frame, const nncar_line_estimate_t *est,
                       float v_desired, float v_cmd, float kappa)
 {
-    float x[NNCAR_LINE_INPUT_DIM];
-    nncar_line_nn_input(p, frame, est, v_desired, x);
+    float row[DUMP_ROW];
+
+    nncar_line_nn_input(p, frame, est, v_desired, row);
 
     float s_v = (v_desired > 1.0e-3f) ? v_cmd / v_desired : 0.0f;
-    s_v = nncar_clampf(s_v, 0.0f, 1.0f);
-    float kn = nncar_clampf(kappa / p->kappa_ref, -1.0f, 1.0f);
+    row[NNCAR_LINE_INPUT_DIM] = nncar_clampf(s_v, 0.0f, 1.0f);
+    row[NNCAR_LINE_INPUT_DIM + 1] = nncar_clampf(kappa / p->kappa_ref, -1.0f, 1.0f);
 
-    for (int i = 0; i < NNCAR_LINE_INPUT_DIM; ++i) {
-        fprintf(dump, "%.6f,", (double)x[i]);
+    if (fwrite(row, sizeof(row), 1, dump) != 1) {
+        /* Write errors are surfaced by the caller through ferror(). */
     }
-    fprintf(dump, "%.6f,%.6f\n", (double)s_v, (double)kn);
 }
 
 /*
@@ -218,8 +246,10 @@ static void run_stack(const nncar_profile_t *p, const scenario_t *sc, src_t src,
                       FILE *dump)
 {
     nncar_sim_t sim;
-    nncar_sim_init(&sim, p, 0.0f, sc->offset_m, sc->heading_deg * NNCAR_PI / 180.0f,
-                   sc->rail_v);
+    float x0 = 0.0f;
+    float y0 = 0.0f;
+    start_pose(sc, &x0, &y0);
+    nncar_sim_init(&sim, p, x0, y0, sc->heading_deg * NNCAR_PI / 180.0f, sc->rail_v);
     apply_scenario(&sim, sc, seed);
 
     nncar_stack_t stack;
@@ -276,14 +306,23 @@ static void run_stack(const nncar_profile_t *p, const scenario_t *sc, src_t src,
         m->recovery_s += (out.mode == NNCAR_LINE_RECOVERY) ? dt : 0.0f;
         m->recovery_hits = (int)stack.line.transitions;
 
+        if (k_trace && k_trace_index >= 0 && sc == &k_suite[k_trace_index] && line_tick &&
+            k < 900) {
+            fprintf(stderr,
+                    "SRC=%d t=%.2f lat=%.4f v=%.3f w=%.3f mode=%d conf=%.2f faults=0x%x\n",
+                    (int)src, (double)((float)now_us * 1.0e-6f),
+                    (double)(sim.y - nncar_sim_track_y(sim.x, &sim)), (double)out.twist.v,
+                    (double)out.twist.omega, (int)out.mode, (double)out.line.confidence,
+                    out.safety.active_faults);
+        }
+
         if (dump != NULL && line_tick) {
             const nncar_gray_frame_t frame = {gray_value, gray_exist, gray_valid};
-            float v_cmd = 0.0f;
-            float omega = 0.0f;
+            nncar_twist_t label = {0.0f, 0.0f};
             float kappa = 0.0f;
-            oracle_cmd(p, &sim, sc->v_desired, nncar_v_max_eff(p, sim.v_rail), &v_cmd,
-                       &omega, &kappa);
-            dump_pair(dump, p, &frame, &out.line, sc->v_desired, v_cmd, kappa);
+            oracle_cmd(p, &sim, sc->v_desired, nncar_v_max_eff(p, sim.v_rail), &label,
+                       &kappa);
+            dump_pair(dump, p, &frame, &out.line, sc->v_desired, label.v, kappa);
         }
 
         now_us += dt_us;
@@ -295,8 +334,10 @@ static void run_oracle(const nncar_profile_t *p, const scenario_t *sc, uint32_t 
                        metrics_t *m, FILE *dump)
 {
     nncar_sim_t sim;
-    nncar_sim_init(&sim, p, 0.0f, sc->offset_m, sc->heading_deg * NNCAR_PI / 180.0f,
-                   sc->rail_v);
+    float x0 = 0.0f;
+    float y0 = 0.0f;
+    start_pose(sc, &x0, &y0);
+    nncar_sim_init(&sim, p, x0, y0, sc->heading_deg * NNCAR_PI / 180.0f, sc->rail_v);
     apply_scenario(&sim, sc, seed);
 
     nncar_motor_state_t motor_l;
@@ -334,6 +375,7 @@ static void run_oracle(const nncar_profile_t *p, const scenario_t *sc, uint32_t 
     uint64_t now_us = 0;
     bool edges = false;
     float twist_age = 0.0f;
+    float last_kappa = 0.0f;
 
     for (int k = 0; k < ticks; ++k) {
         float gray_value[NNCAR_MAX_SENSORS];
@@ -342,27 +384,23 @@ static void run_oracle(const nncar_profile_t *p, const scenario_t *sc, uint32_t 
         nncar_sim_read_gray(&sim, p, gray_value, gray_exist, gray_valid);
 
         const float v_max_eff = nncar_v_max_eff(p, sim.v_rail);
+        twist_age += dt;
         const bool line_tick = (k % line_every) == 0;
 
         if (line_tick) {
             nncar_gray_process(p, gray_value, gray_exist, gray_valid, &est);
 
-            float v_cmd = 0.0f;
-            float omega_cmd = 0.0f;
             float kappa = 0.0f;
-            oracle_cmd(p, &sim, sc->v_desired, v_max_eff, &v_cmd, &omega_cmd, &kappa);
-            twist.v = v_cmd;
-            twist.omega = omega_cmd;
+            oracle_cmd(p, &sim, sc->v_desired, v_max_eff, &twist, &kappa);
+            last_kappa = kappa;
             wheels = nncar_mixer(p, twist, v_max_eff).wheels;
             twist_age = 0.0f;
 
             if (dump != NULL) {
                 const nncar_gray_frame_t frame = {gray_value, gray_exist, gray_valid};
-                dump_pair(dump, p, &frame, &est, sc->v_desired, v_cmd, kappa);
+                dump_pair(dump, p, &frame, &est, sc->v_desired, twist.v, kappa);
             }
         }
-
-        twist_age += dt;
 
         nncar_safety_input_t sin;
         memset(&sin, 0, sizeof(sin));
@@ -415,6 +453,20 @@ static void run_oracle(const nncar_profile_t *p, const scenario_t *sc, uint32_t 
                     (float)now_us * 1.0e-6f, dt);
         m->faults |= saf.active_faults;
 
+        if (k_trace && line_tick && k < 900) {
+            fprintf(stderr,
+                    "t=%.3f lat=%.4f kap=%.3f w=%.3f wL=%.3f wR=%.3f tgt=(%.3f,%.3f) "
+                    "pwm=(%.2f,%.2f) act=0x%x latch=0x%x ramp=%.2f\n",
+                    (double)((float)now_us * 1.0e-6f),
+                    (double)(sim.y - nncar_sim_track_y(sim.x, &sim)), (double)last_kappa,
+                    (double)twist.omega,
+                    (double)(sim.w_left * p->wheel_radius_m),
+                    (double)(sim.w_right * p->wheel_radius_m),
+                    (double)saf.wheel_out.left, (double)saf.wheel_out.right,
+                    (double)ml.pwm, (double)mr.pwm, saf.active_faults, saf.latched_faults,
+                    (double)saf.ramp);
+        }
+
         now_us += dt_us;
     }
 }
@@ -444,13 +496,21 @@ static float aggregate(const metrics_t *m)
 static void dump_teacher(const nncar_profile_t *p, const char *path, int episodes,
                          uint32_t seed)
 {
-    FILE *fp = fopen(path, "w");
+    FILE *fp = fopen(path, "wb");
     if (fp == NULL) {
         fprintf(stderr, "cannot open %s\n", path);
         return;
     }
 
-    fprintf(fp, "# x[0..67],s_v,kappa_norm\n");
+    /* Header: magic, episodes, line ticks per run, runs per episode. */
+    const int32_t rows_per_run = (int32_t)(DURATION_S / p->line_dt_s + 0.5f);
+    const int32_t runs_per_ep = 3;   /* oracle, PID, current MLP */
+    const int32_t header[4] = {0x4C4E4E31, episodes, rows_per_run, runs_per_ep};
+    if (fwrite(header, sizeof(header), 1, fp) != 1) {
+        fprintf(stderr, "write error on %s\n", path);
+        fclose(fp);
+        return;
+    }
 
     uint32_t rng = seed | 1u;
     for (int ep = 0; ep < episodes; ++ep) {
@@ -472,17 +532,25 @@ static void dump_teacher(const nncar_profile_t *p, const char *path, int episode
         sc.noise_std = (ep % 4 == 3) ? 0.06f : 0.0f;
         sc.gain_bias = (ep % 5 == 4) ? 0.10f : 0.0f;
         sc.offset_bias = (ep % 6 == 5) ? 0.04f : 0.0f;
-        sc.missing_a = (ep % 7 == 6) ? 3 : -1;
-        sc.missing_b = (ep % 7 == 6) ? 6 : -1;
+        /* Missing channels are drawn from the whole array, not fixed slots. */
+        sc.missing_a = (ep % 7 == 6) ? (ep * 3 + 1) % 8 : -1;
+        sc.missing_b = (ep % 7 == 6) ? (ep * 5 + 4) % 8 : -1;
         sc.valid_prob = (ep % 7 == 6) ? 0.92f : 1.0f;
 
         metrics_t m;
-        run_one(p, &sc, SRC_ORACLE, NULL, seed + (uint32_t)ep * 2u + 1u, &m, fp);
-        run_one(p, &sc, SRC_PID, NULL, seed + (uint32_t)ep * 2u + 2u, &m, fp);
+        run_one(p, &sc, SRC_ORACLE, NULL, seed + (uint32_t)ep * 3u + 1u, &m, fp);
+        run_one(p, &sc, SRC_PID, NULL, seed + (uint32_t)ep * 3u + 2u, &m, fp);
+        /* Student-in-the-loop states, relabelled by the oracle (DAgger). */
+        run_one(p, &sc, SRC_MLP, nncar_line_nn_trained(), seed + (uint32_t)ep * 3u + 3u,
+                &m, fp);
     }
 
+    if (ferror(fp)) {
+        fprintf(stderr, "write error on %s\n", path);
+    }
     fclose(fp);
-    fprintf(stderr, "teacher: %d episodes -> %s\n", episodes, path);
+    fprintf(stderr, "teacher: %d episodes, %d rows x %d float32 -> %s\n", episodes,
+            episodes * runs_per_ep * rows_per_run, DUMP_ROW, path);
 }
 
 static void print_header(void)
@@ -508,10 +576,23 @@ int main(int argc, char **argv)
             episodes = atoi(argv[++i]);
         } else if (strcmp(a, "--seed") == 0 && i + 1 < argc) {
             seed = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--ke") == 0 && i + 1 < argc) {
+            k_oracle_ke = (float)atof(argv[++i]);
+        } else if (strcmp(a, "--ktheta") == 0 && i + 1 < argc) {
+            k_oracle_ktheta = (float)atof(argv[++i]);
+        } else if (strcmp(a, "--alat") == 0 && i + 1 < argc) {
+            k_oracle_alat = (float)atof(argv[++i]);
+        } else if (strcmp(a, "--trace") == 0) {
+            k_trace = true;
+            if (i + 1 < argc) {
+                k_trace_index = atoi(argv[++i]);
+            }
         } else {
             fprintf(stderr,
                     "usage: %s [--check] [--dump-teacher out.csv] "
-                    "[--episodes N] [--seed S]\n",
+                    "[--episodes N] [--seed S]\n"
+                    "          [--ke K] [--ktheta K] [--alat F]  (oracle tuning)\n"
+                    "          [--trace N]  (print scenario N per line tick)\n",
                     argv[0]);
             return 2;
         }

@@ -107,6 +107,10 @@ add_test(NAME replay_golden
 
 add_test(NAME baseline_modes COMMAND nncar_baseline --check)
 
+# LineFollower A/B harness smoke test. The epsilon gate itself is a milestone
+# check (`nncar_line_ab --check`), not a regression test; see docs section 4.4.
+add_test(NAME line_ab COMMAND nncar_line_ab)
+
 set(BENCH_CSV ${CMAKE_BINARY_DIR}/bench.csv)
 set(BENCH_TRUTH ${CMAKE_BINARY_DIR}/bench_truth.json)
 set(BENCH_SCHEMA ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema/bench_log.schema.json)

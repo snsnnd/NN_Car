@@ -13,6 +13,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import gen_line_nn  # noqa: E402
 import gen_motor_nn  # noqa: E402
 import gen_profile  # noqa: E402
 import golden  # noqa: E402
@@ -22,6 +23,7 @@ import validate_log  # noqa: E402
 ROOT = HERE.parents[1]
 CONFIG = ROOT / "configs" / "vehicle_default.json"
 WEIGHTS = ROOT / "configs" / "motor_nn_weights.json"
+LINE_WEIGHTS = ROOT / "configs" / "line_nn_weights.json"
 SCHEMA = ROOT / "tools" / "schema" / "run_log.schema.json"
 
 FAILURES: list[str] = []
@@ -295,11 +297,41 @@ def test_motor_nn_generation(tmp: Path) -> None:
         pass
 
 
+def test_line_nn_generation(tmp: Path) -> None:
+    doc, weights = gen_line_nn.load_weights(LINE_WEIGHTS)
+    text = gen_line_nn.render(doc, weights, str(LINE_WEIGHTS))
+
+    params = sum(int(w.size) for w in weights.values())
+    check(params == 7058, f"line_nn: parameter count {params} != 7058")
+    check("nncar_line_nn_trained" in text, "line_nn: accessor missing")
+
+    first_row = ", ".join(gen_line_nn._cfloat(v)
+                          for v in weights["w1"].T[0])
+    check(f"{{ {first_row} }},", "line_nn: w1 row was not transposed")
+
+    for name, mutate in (
+        ("input_dim", lambda d: d.update(input_dim=66)),
+        ("hidden", lambda d: d.update(hidden=[32, 32, 16])),
+        ("output", lambda d: d.update(output="tanh")),
+        ("trained", lambda d: d.update(trained=False)),
+    ):
+        broken = json.loads(LINE_WEIGHTS.read_text(encoding="utf-8"))
+        mutate(broken)
+        path = tmp / f"broken_line_{name}.json"
+        path.write_text(json.dumps(broken), encoding="utf-8")
+        try:
+            gen_line_nn.load_weights(path)
+            check(False, f"line_nn: {name} was not rejected")
+        except (KeyError, ValueError):
+            pass
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         test_profile_generation(tmp)
         test_motor_nn_generation(tmp)
+        test_line_nn_generation(tmp)
         test_validation(tmp)
         test_golden(tmp)
         test_identification(tmp)

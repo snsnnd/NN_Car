@@ -71,8 +71,12 @@ static void test_mlp_contract(const nncar_profile_t *p, float v_max_eff,
     nncar_line_state_t zero_state;
     nncar_line_reset(&zero_state);
     nncar_line_set_ctrl(&zero_state, NNCAR_LINE_CTRL_MLP, &zero_nn);
-    nncar_twist_t ztw = nncar_line_step(p, &zero_state, clean, est, 0.9f, v_max_eff,
-                                        0.0f, p->line_dt_s);
+    /* The post-recovery ramp lasts recovery_ramp_s; step it out first. */
+    nncar_twist_t ztw = {0.0f, 0.0f};
+    for (int i = 0; i < 30; ++i) {
+        ztw = nncar_line_step(p, &zero_state, clean, est, 0.9f, v_max_eff,
+                              (float)i * p->line_dt_s, p->line_dt_s);
+    }
     CHECK_NEAR(ztw.v, 0.45f, 1.0e-6f);
     CHECK_NEAR(ztw.omega, 0.0f, 1.0e-9f);
 

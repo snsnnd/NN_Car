@@ -176,6 +176,14 @@ static nncar_twist_t recovery_step(const nncar_profile_t *p,
     return nncar_twist_envelope(p, cmd, v_max_eff);
 }
 
+/* Shared comfort policy: shed speed as the commanded yaw rate grows. */
+static float curve_slow(const nncar_profile_t *p, float omega)
+{
+    float slow = 1.0f - p->curve_slow_factor *
+                            fminf(1.0f, fabsf(omega) / fmaxf(p->omega_ref_radps, 1.0e-3f));
+    return nncar_clampf(slow, 0.1f, 1.0f);
+}
+
 /* Deterministic PID teacher on lateral centroid offset (+ = line on the left). */
 static nncar_twist_t pid_step(const nncar_profile_t *p,
                               nncar_line_state_t *st,
@@ -200,9 +208,7 @@ static nncar_twist_t pid_step(const nncar_profile_t *p,
 
     float omega = p->pid_kp * e + p->pid_kd * st->d_filtered;
 
-    float slow = 1.0f - p->curve_slow_factor *
-                            fminf(1.0f, fabsf(omega) / fmaxf(p->omega_ref_radps, 1.0e-3f));
-    slow = nncar_clampf(slow, 0.1f, 1.0f);
+    float slow = curve_slow(p, omega);
 
     nncar_twist_t cmd;
     cmd.v = fminf(v_desired, v_max_eff) * slow;
@@ -223,7 +229,15 @@ static nncar_twist_t mlp_step(const nncar_profile_t *p,
     nncar_line_nn_input(p, frame, est, v_desired, x);
     nncar_line_nn_eval(nn, x, y);
 
-    return nncar_twist_from_kappa(p, y[0], y[1], v_desired, v_max_eff);
+    nncar_twist_t twist = nncar_twist_from_kappa(p, y[0], y[1], v_desired, v_max_eff);
+
+    /* Same comfort envelope as the PID: shed speed as the yaw rate grows. */
+    float kappa = nncar_clampf(y[1], -1.0f, 1.0f) * p->kappa_ref;
+    float slow = curve_slow(p, twist.omega);
+    twist.v *= slow;
+    twist.omega = kappa * twist.v;
+
+    return nncar_twist_envelope(p, twist, v_max_eff);
 }
 
 nncar_twist_t nncar_line_step(const nncar_profile_t *p,
