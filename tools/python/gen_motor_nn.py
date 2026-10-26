@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-INPUT_DIM = 7
+INPUT_DIM = 8
 HIDDEN = (32, 16, 8)
 
 # (json key, numpy shape, C rows, C cols)
@@ -56,8 +56,11 @@ def load_weights(path: Path) -> tuple[dict, dict]:
 
     if doc.get("model") not in ("residual_mlp", "direct_mlp"):
         raise ValueError(f"unexpected model: {doc.get('model')!r}")
-    if int(doc["input_dim"]) != INPUT_DIM:
-        raise ValueError(f"input_dim {doc['input_dim']} != {INPUT_DIM}")
+    # A 7-column network is a pre-history model: pad the temporal input with a
+    # zero row so it keeps its exact behaviour in the 8-wide firmware contract.
+    in_dim = int(doc["input_dim"])
+    if in_dim not in (INPUT_DIM - 1, INPUT_DIM):
+        raise ValueError(f"input_dim {in_dim} not in ({INPUT_DIM - 1}, {INPUT_DIM})")
     if tuple(int(h) for h in doc["hidden"]) != HIDDEN:
         raise ValueError(f"hidden {doc['hidden']} != {list(HIDDEN)}")
     if doc.get("activation") != "relu" or doc.get("output") != "tanh":
@@ -68,13 +71,14 @@ def load_weights(path: Path) -> tuple[dict, dict]:
     shape = doc["shape"]
     weights: dict[str, np.ndarray] = {}
     for key, want, _, _ in MATRICES:
-        if tuple(int(s) for s in shape[key]) != want:
-            raise ValueError(f"shape[{key}] {shape[key]} != {list(want)}")
+        expect = (in_dim, HIDDEN[0]) if key == "w1" else want
+        if tuple(int(s) for s in shape[key]) != expect:
+            raise ValueError(f"shape[{key}] {shape[key]} != {list(expect)}")
         flat = np.asarray(doc["weights"][key], dtype=np.float64)
-        if flat.size != want[0] * want[1]:
+        if flat.size != expect[0] * expect[1]:
             raise ValueError(f"weights[{key}] has {flat.size} values, "
-                             f"expected {want[0] * want[1]}")
-        weights[key] = flat.reshape(want)
+                             f"expected {expect[0] * expect[1]}")
+        weights[key] = flat.reshape(expect)
     for key, size in VECTORS:
         if tuple(int(s) for s in shape[key]) != (size,):
             raise ValueError(f"shape[{key}] {shape[key]} != [{size}]")
@@ -82,6 +86,11 @@ def load_weights(path: Path) -> tuple[dict, dict]:
         if flat.size != size:
             raise ValueError(f"weights[{key}] has {flat.size} values, expected {size}")
         weights[key] = flat
+
+    if in_dim != INPUT_DIM:
+        pad = np.zeros((INPUT_DIM, HIDDEN[0]), dtype=np.float64)
+        pad[:in_dim, :] = weights["w1"]
+        weights["w1"] = pad
 
     return doc, weights
 

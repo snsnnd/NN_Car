@@ -50,9 +50,11 @@ void nncar_motor_nn_input(const nncar_profile_t *p,
                           const nncar_motor_input_t *in,
                           float u_pi,
                           float previous_pwm,
+                          float e_acc,
                           float x[NNCAR_MOTOR_INPUT_DIM])
 {
     float v_ref = fmaxf(p->v_max_nom_mps, 1.0e-3f);
+    const float i_lim = fmaxf(p->motor_i_limit, 1.0e-3f);
 
     x[0] = nncar_clampf(in->target_mps / v_ref, -2.0f, 2.0f);
     x[1] = nncar_clampf(in->actual_mps / v_ref, -2.0f, 2.0f);
@@ -61,6 +63,7 @@ void nncar_motor_nn_input(const nncar_profile_t *p,
     x[4] = nncar_clampf(in->rail_ratio, p->rail_scale_min, p->rail_scale_max);
     x[5] = in->rail_exist ? 1.0f : 0.0f;
     x[6] = in->rail_valid ? 1.0f : 0.0f;
+    x[7] = nncar_clampf(e_acc / i_lim, -1.0f, 1.0f);
 }
 
 nncar_motor_out_t nncar_motor_step(const nncar_profile_t *p,
@@ -74,17 +77,28 @@ nncar_motor_out_t nncar_motor_step(const nncar_profile_t *p,
 
     if (!in->enable) {
         st->integral = 0.0f;
+        st->e_acc = 0.0f;
         st->u = 0.0f;
         st->applied_pwm = 0.0f;
         st->enable_prev = false;
         return out;
     }
 
+    /*
+     * Temporal feature for every mode: a clipped sum of the speed error. It is
+     * the same accumulation a PI would do, but nobody is obliged to use it as
+     * an integral term - the residual weights zero-pad the column and the
+     * standalone policy is free to lean on it.
+     */
+    const float error = in->target_mps - in->actual_mps;
+    st->e_acc = nncar_clampf(st->e_acc + error * dt_s, -p->motor_i_limit,
+                             p->motor_i_limit);
+
     /* Standalone policy: no PI, no integrator, no memory. Falls back to PI+FF
      * when the network is absent, which is the only safe degradation here. */
     if (cfg->mode == NNCAR_MOTOR_MODE_NN_DIRECT && cfg->nn != NULL) {
         float x[NNCAR_MOTOR_INPUT_DIM];
-        nncar_motor_nn_input(p, in, 0.0f, st->applied_pwm, x);
+        nncar_motor_nn_input(p, in, 0.0f, st->applied_pwm, st->e_acc, x);
         float t = nncar_motor_nn_eval(cfg->nn, x);
         float u = nncar_finite(t) ? nncar_clampf(t, -1.0f, 1.0f) : 0.0f;
 
@@ -102,7 +116,6 @@ nncar_motor_out_t nncar_motor_step(const nncar_profile_t *p,
 
     const bool feedforward = cfg->mode != NNCAR_MOTOR_MODE_PI;
 
-    float error = in->target_mps - in->actual_mps;
     float u_ff = 0.0f;
 
     if (feedforward && in->v_max_eff > 1.0e-3f) {
@@ -117,7 +130,7 @@ nncar_motor_out_t nncar_motor_step(const nncar_profile_t *p,
 
     if (cfg->mode == NNCAR_MOTOR_MODE_PI_RESIDUAL && cfg->nn != NULL) {
         float x[NNCAR_MOTOR_INPUT_DIM];
-        nncar_motor_nn_input(p, in, u_pi, st->applied_pwm, x);
+        nncar_motor_nn_input(p, in, u_pi, st->applied_pwm, st->e_acc, x);
         float residual = nncar_motor_nn_eval(cfg->nn, x);
         if (nncar_finite(residual)) {
             u_nn = p->motor_alpha * nncar_clampf(residual, -1.0f, 1.0f);

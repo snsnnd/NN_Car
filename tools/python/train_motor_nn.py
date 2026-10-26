@@ -211,15 +211,19 @@ def rollout_direct(profile: dict, plant_params: np.ndarray, targets: np.ndarray,
 
     total = 0.0
     count = 0
+    e_acc = 0.0
     for i in range(targets.shape[0]):
         v = plant.v
         rail_v = float(rail[i])
         rail_ratio = (rail_v / ctrl.rail_nom) if valid[i] else 1.0
         prev_pwm = ctrl.applied_pwm
 
+        err = float(targets[i]) - v
+        e_acc = float(np.clip(e_acc + err * mt.DT_S, -ctrl.i_limit, ctrl.i_limit))
+
         x = mt.features(ctrl.v_max_nom, ctrl.scale_min, ctrl.scale_max,
                         float(targets[i]), v, prev_pwm, 0.0, rail_ratio,
-                        bool(valid[i]))
+                        bool(valid[i]), float(np.clip(e_acc / ctrl.i_limit, -1.0, 1.0)))
         u = float(mt.forward(net, x)[0])
         pwm = ctrl.compensate(float(np.clip(u, -1.0, 1.0)))
         ctrl.applied_pwm = pwm

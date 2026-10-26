@@ -153,7 +153,7 @@ int main(void)
         in.rail_valid = false;
 
         float x[NNCAR_MOTOR_INPUT_DIM];
-        nncar_motor_nn_input(p, &in, 0.42f, -0.11f, x);
+        nncar_motor_nn_input(p, &in, 0.42f, -0.11f, 0.3f, x);
 
         const float v_ref = p->v_max_nom_mps;
         CHECK_NEAR(x[0], 0.75f / v_ref, 1.0e-6f);
@@ -163,16 +163,43 @@ int main(void)
         CHECK_NEAR(x[4], 0.9f, 1.0e-6f);
         CHECK_NEAR(x[5], 1.0f, 1.0e-6f);
         CHECK_NEAR(x[6], 0.0f, 1.0e-6f);
+        CHECK_NEAR(x[7], 0.3f / p->motor_i_limit, 1.0e-6f);
 
         /* Out-of-range inputs are clipped, not wrapped. */
         nncar_motor_input_t big = make_input(10.0f, 10.0f, v_max_eff);
         big.rail_ratio = 10.0f;
-        nncar_motor_nn_input(p, &big, 5.0f, 5.0f, x);
+        nncar_motor_nn_input(p, &big, 5.0f, 5.0f, 1.0e9f, x);
         CHECK_NEAR(x[0], 2.0f, 1.0e-6f);
         CHECK_NEAR(x[1], 2.0f, 1.0e-6f);
         CHECK_NEAR(x[2], 1.0f, 1.0e-6f);
         CHECK_NEAR(x[3], 1.0f, 1.0e-6f);
         CHECK_NEAR(x[4], p->rail_scale_max, 1.0e-6f);
+        CHECK_NEAR(x[7], 1.0f, 1.0e-6f);
+    }
+
+    /* ---- temporal feature: clipped error sum, maintained in every mode --- */
+    {
+        nncar_motor_cfg_t cfg = make_cfg(NNCAR_MOTOR_MODE_PI_FF, NULL);
+        nncar_motor_state_t st;
+        nncar_motor_reset(&st);
+
+        nncar_motor_input_t in = make_input(0.8f, 0.3f, v_max_eff);
+        nncar_motor_step(p, &st, &cfg, &in, dt);
+
+        float expect = nncar_clampf((0.8f - 0.3f) * dt, -p->motor_i_limit,
+                                    p->motor_i_limit);
+        CHECK_NEAR(st.e_acc, expect, 1.0e-7f);
+
+        in.actual_mps = 0.1f;
+        nncar_motor_step(p, &st, &cfg, &in, dt);
+        expect = nncar_clampf(expect + (0.8f - 0.1f) * dt, -p->motor_i_limit,
+                              p->motor_i_limit);
+        CHECK_NEAR(st.e_acc, expect, 1.0e-7f);
+
+        /* Disabling the loop clears the history, not just the integral. */
+        in.enable = false;
+        nncar_motor_step(p, &st, &cfg, &in, dt);
+        CHECK_NEAR(st.e_acc, 0.0f, 1.0e-9f);
     }
 
     /* ---- disabled path zeroes everything ------------------------------ */

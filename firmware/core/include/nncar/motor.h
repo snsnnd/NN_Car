@@ -3,8 +3,16 @@
 
 #include "nncar/profile.h"
 
-/* Residual network input: the 7 frozen dimensions (R3 section 6.1). */
-#define NNCAR_MOTOR_INPUT_DIM 7
+/*
+ * Residual network input: the 8 frozen dimensions (R3 section 6.1).
+ *
+ * x[7] is the only temporal feature: a clipped accumulator of the speed error,
+ * maintained identically in every mode. A fixed window of past errors cannot
+ * work here (the settling time is 0.1-0.5 s = 50-250 ticks at 500 Hz), so the
+ * history is compressed into one state. Residual weights may ignore it by
+ * zero-padding the column.
+ */
+#define NNCAR_MOTOR_INPUT_DIM 8
 #define NNCAR_MOTOR_H1 32
 #define NNCAR_MOTOR_H2 16
 #define NNCAR_MOTOR_H3 8
@@ -45,6 +53,7 @@ typedef struct {
 
 typedef struct {
     float integral;
+    float e_acc;         /* clipped sum of speed error, feeds x[7] in every mode */
     float u;             /* last command before deadband compensation */
     float applied_pwm;   /* safe_pwm_applied[t-1], feeds previous_applied_pwm */
     bool enable_prev;
@@ -99,6 +108,7 @@ void nncar_motor_nn_input(const nncar_profile_t *p,
                           const nncar_motor_input_t *in,
                           float u_pi,
                           float previous_pwm,
+                          float e_acc,
                           float x[NNCAR_MOTOR_INPUT_DIM]);
 
 #endif

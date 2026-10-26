@@ -263,7 +263,8 @@ def test_motor_nn_generation(tmp: Path) -> None:
         weights["b2"].size, weights["w3"].size, weights["b3"].size,
         weights["w4"].size, weights["b4"].size,
     ))
-    check(params == 929, f"motor_nn: parameter count {params} != 929")
+    # 8 inputs x 32 + 32 + 32 x 16 + 16 + 16 x 8 + 8 + 8 x 1 + 1
+    check(params == 961, f"motor_nn: parameter count {params} != 961")
     check("nncar_motor_nn_trained" in text, "motor_nn: accessor missing")
 
     # The JSON matrix is [fan_in, fan_out]; the C struct is [fan_out][fan_in].

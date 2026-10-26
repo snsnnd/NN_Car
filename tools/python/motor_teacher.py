@@ -43,7 +43,7 @@ from pathlib import Path
 import numpy as np
 
 DT_S = 0.002
-INPUT_DIM = 7
+INPUT_DIM = 8
 
 # MPC teacher: horizon in ticks, candidate residuals, and the label range.
 # The range stays below 1 so the tanh output never sits on its flat tail.
@@ -58,8 +58,13 @@ def clampf(x: float, lo: float, hi: float) -> float:
 
 def features(v_max_nom: float, scale_min: float, scale_max: float,
              target: float, actual: float, prev_pwm: float, u_pi: float,
-             rail_ratio: float, rail_valid: bool) -> np.ndarray:
-    """Frozen 7-D input contract, identical to nncar_motor_nn_input()."""
+             rail_ratio: float, rail_valid: bool,
+             e_acc_norm: float = 0.0) -> np.ndarray:
+    """Frozen 8-D input contract, identical to nncar_motor_nn_input().
+
+    ``e_acc_norm`` is the clipped error accumulator divided by ``i_limit``; it
+    is the only temporal feature and is maintained in every mode.
+    """
     x = np.empty(INPUT_DIM, dtype=np.float32)
     x[0] = clampf(target / v_max_nom, -2.0, 2.0)
     x[1] = clampf(actual / v_max_nom, -2.0, 2.0)
@@ -68,6 +73,7 @@ def features(v_max_nom: float, scale_min: float, scale_max: float,
     x[4] = clampf(rail_ratio, scale_min, scale_max)
     x[5] = 1.0
     x[6] = 1.0 if rail_valid else 0.0
+    x[7] = clampf(e_acc_norm, -1.0, 1.0)
     return x
 
 
@@ -106,6 +112,7 @@ class Controller:
         self.scale_min = float(rail["scale_min"])
         self.scale_max = float(rail["scale_max"])
         self.integral = 0.0
+        self.e_acc = 0.0
         self.applied_pwm = 0.0
         self.u = 0.0
         # Exposed after each step so the teacher can rebuild the same state.
@@ -125,10 +132,14 @@ class Controller:
 
     def reset(self) -> None:
         self.integral = 0.0
+        self.e_acc = 0.0
         self.applied_pwm = 0.0
         self.u = 0.0
         self.integ0 = 0.0
         self.u_unsat = 0.0
+
+    def e_acc_norm(self) -> float:
+        return clampf(self.e_acc / max(self.i_limit, 1.0e-3), -1.0, 1.0)
 
     def step(self, target: float, actual: float, v_max_eff: float,
              residual_fn=None, rail_ratio: float = 1.0,
@@ -137,6 +148,7 @@ class Controller:
         feedforward = self.mode != "pi"
 
         err = target - actual
+        self.e_acc = clampf(self.e_acc + err * DT_S, -self.i_limit, self.i_limit)
         u_ff = 0.0
         if feedforward and v_max_eff > 1.0e-3:
             u_ff = self.kff * target / v_max_eff
@@ -148,7 +160,8 @@ class Controller:
         u_nn = 0.0
         if residual_fn is not None:
             x = features(self.v_max_nom, self.scale_min, self.scale_max,
-                         target, actual, prev_pwm, u_pi, rail_ratio, rail_valid)
+                         target, actual, prev_pwm, u_pi, rail_ratio, rail_valid,
+                         self.e_acc_norm())
             u_nn = self.alpha * float(residual_fn(x))
 
         u_cmd = clampf(u_pi + u_nn, -1.0, 1.0)
@@ -343,6 +356,7 @@ def generate(profile: dict, identified: dict, episodes: int, seed: int,
         rec = {
             "v": np.zeros(steps), "integ0": np.zeros(steps),
             "u_pi": np.zeros(steps), "u_unsat": np.zeros(steps),
+            "e_acc": np.zeros(steps),
             "target": targets.astype(np.float64),
             "rail": rail.astype(np.float64),
             "prev_pwm": np.zeros(steps),
@@ -363,6 +377,7 @@ def generate(profile: dict, identified: dict, episodes: int, seed: int,
             rec["integ0"][i] = controller.integ0
             rec["u_pi"][i] = u_pi
             rec["u_unsat"][i] = controller.u_unsat
+            rec["e_acc"][i] = controller.e_acc_norm()
 
             plant.step(pwm, rail_v)
 
@@ -375,7 +390,7 @@ def generate(profile: dict, identified: dict, episodes: int, seed: int,
             x_ep[i] = features(controller.v_max_nom, controller.scale_min,
                                controller.scale_max, targets[i], rec["v"][i],
                                rec["prev_pwm"][i], rec["u_pi"][i], rail_ratio,
-                               bool(valid[i]))
+                               bool(valid[i]), rec["e_acc"][i])
 
         xs.append(x_ep)
         ts.append(t_ep)
