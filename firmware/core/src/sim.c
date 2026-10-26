@@ -21,6 +21,27 @@ void nncar_sim_init(nncar_sim_t *s, const nncar_profile_t *p,
     s->inertia_kgm2 = 2.0e-5f;
     s->damping_nms = 4.0e-4f;
     s->torque_gain_nm = s->damping_nms * (p->v_max_nom_mps / p->wheel_radius_m);
+
+    s->rng = 0x9e3779b9u;
+    s->gray_valid_prob = 1.0f;
+    for (int i = 0; i < NNCAR_MAX_SENSORS; ++i) {
+        s->gray_gain[i] = 1.0f;
+    }
+}
+
+void nncar_sim_seed(nncar_sim_t *s, uint32_t seed)
+{
+    s->rng = (seed != 0u) ? seed : 0x9e3779b9u;
+}
+
+static float sim_rand(nncar_sim_t *s)
+{
+    uint32_t x = s->rng;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    s->rng = x;
+    return (float)(x >> 8) * (1.0f / 16777216.0f);
 }
 
 float nncar_sim_track_y(float x, const nncar_sim_t *s)
@@ -31,7 +52,7 @@ float nncar_sim_track_y(float x, const nncar_sim_t *s)
     return s->track_amp_m * sinf(2.0f * NNCAR_PI * x / s->track_wavelength_m);
 }
 
-void nncar_sim_read_gray(const nncar_sim_t *s, const nncar_profile_t *p,
+void nncar_sim_read_gray(nncar_sim_t *s, const nncar_profile_t *p,
                          float value[NNCAR_MAX_SENSORS],
                          uint8_t exist[NNCAR_MAX_SENSORS],
                          uint8_t valid[NNCAR_MAX_SENSORS])
@@ -42,7 +63,7 @@ void nncar_sim_read_gray(const nncar_sim_t *s, const nncar_profile_t *p,
     float left_y = cosf(s->theta);
 
     for (int i = 0; i < NNCAR_MAX_SENSORS; ++i) {
-        if (i >= p->sensor_count) {
+        if (i >= p->sensor_count || s->gray_missing[i] != 0u) {
             value[i] = 0.0f;
             exist[i] = 0u;
             valid[i] = 0u;
@@ -63,9 +84,15 @@ void nncar_sim_read_gray(const nncar_sim_t *s, const nncar_profile_t *p,
             g = fmaxf(-1.0f, 1.0f - 2.0f * (t - 1.0f));
         }
 
-        value[i] = g;
+        g = g * s->gray_gain[i] + s->gray_offset;
+        if (s->gray_noise_std > 0.0f) {
+            g += s->gray_noise_std * (2.0f * sim_rand(s) - 1.0f);
+        }
+
+        value[i] = nncar_clampf(g, -1.0f, 1.0f);
         exist[i] = 1u;
-        valid[i] = 1u;
+        valid[i] = (s->gray_valid_prob >= 1.0f ||
+                    sim_rand(s) < s->gray_valid_prob) ? 1u : 0u;
     }
 }
 

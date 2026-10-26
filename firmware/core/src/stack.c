@@ -6,6 +6,7 @@ void nncar_stack_init(nncar_stack_t *st, const nncar_profile_t *p)
 {
     memset(st, 0, sizeof(*st));
     nncar_line_reset(&st->line);
+    nncar_line_set_ctrl(&st->line, NNCAR_LINE_CTRL_PID, NULL);
     nncar_motor_reset(&st->motor_l);
     nncar_motor_reset(&st->motor_r);
     nncar_safety_reset(&st->safety);
@@ -21,6 +22,12 @@ void nncar_stack_set_motor_mode(nncar_stack_t *st, nncar_motor_mode_t mode,
     st->motor_cfg.nn = nn;
     nncar_motor_reset(&st->motor_l);
     nncar_motor_reset(&st->motor_r);
+}
+
+void nncar_stack_set_line_ctrl(nncar_stack_t *st, nncar_line_ctrl_t ctrl,
+                               const nncar_line_nn_t *nn)
+{
+    nncar_line_set_ctrl(&st->line, ctrl, nn);
 }
 
 nncar_stack_output_t nncar_stack_step(nncar_stack_t *st,
@@ -44,7 +51,9 @@ nncar_stack_output_t nncar_stack_step(nncar_stack_t *st,
         float line_dt = st->line_accum_s;
 
         nncar_gray_process(p, gray_value, gray_exist, gray_valid, &st->estimate);
-        st->twist = nncar_line_step(p, &st->line, &st->estimate, in->v_desired,
+
+        const nncar_gray_frame_t frame = {gray_value, gray_exist, gray_valid};
+        st->twist = nncar_line_step(p, &st->line, &frame, &st->estimate, in->v_desired,
                                     v_max_eff, (float)in->now_us * 1.0e-6f, line_dt);
         st->mix = nncar_mixer(p, st->twist, v_max_eff);
         st->line_accum_s = 0.0f;

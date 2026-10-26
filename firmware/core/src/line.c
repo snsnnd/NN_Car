@@ -2,6 +2,11 @@
 
 #include <string.h>
 
+static float relu(float x)
+{
+    return (x > 0.0f) ? x : 0.0f;
+}
+
 static float omega_limit(const nncar_profile_t *p, float v, float v_max_eff)
 {
     if (v <= 1.0e-3f || p->track_width_m <= 1.0e-6f) {
@@ -56,10 +61,92 @@ nncar_twist_t nncar_twist_from_kappa(const nncar_profile_t *p,
     return nncar_twist_envelope(p, twist, v_max_eff);
 }
 
+void nncar_line_nn_zero(nncar_line_nn_t *nn)
+{
+    memset(nn, 0, sizeof(*nn));
+}
+
+void nncar_line_nn_input(const nncar_profile_t *p,
+                         const nncar_gray_frame_t *frame,
+                         const nncar_line_estimate_t *est,
+                         float v_desired,
+                         float x[NNCAR_LINE_INPUT_DIM])
+{
+    const float pos_ref = fmaxf(p->position_ref_m, 1.0e-6f);
+    const float axle_ref = fmaxf(p->axle_ref_m, 1.0e-6f);
+    const float speed_ref = fmaxf(p->speed_ref_mps, 1.0e-6f);
+
+    for (int i = 0; i < NNCAR_MAX_SENSORS; ++i) {
+        /* Mask first, then clear the value: invalid sensors contribute 0. */
+        bool usable = frame->exist[i] != 0u && frame->valid[i] != 0u;
+        x[i] = usable ? nncar_clampf(frame->value[i], -1.0f, 1.0f) : 0.0f;
+        x[16 + i] = (frame->exist[i] != 0u) ? 1.0f : 0.0f;
+        x[32 + i] = (frame->valid[i] != 0u) ? 1.0f : 0.0f;
+        x[48 + i] = nncar_clampf(p->sensor_position_m[i] / pos_ref, -1.0f, 1.0f);
+    }
+
+    x[64] = nncar_clampf(p->sensor_to_axle_m / axle_ref, -1.0f, 1.0f);
+    x[65] = nncar_clampf(v_desired / speed_ref, 0.0f, 1.0f);
+    x[66] = nncar_clampf(est->confidence, 0.0f, 1.0f);
+    x[67] = nncar_clampf(est->valid_count_norm, 0.0f, 1.0f);
+}
+
+void nncar_line_nn_eval(const nncar_line_nn_t *nn,
+                        const float x[NNCAR_LINE_INPUT_DIM], float y[2])
+{
+    float h1[NNCAR_LINE_H1];
+    float h2[NNCAR_LINE_H2];
+    float h3[NNCAR_LINE_H3];
+
+    for (int i = 0; i < NNCAR_LINE_H1; ++i) {
+        float acc = nn->b1[i];
+        for (int j = 0; j < NNCAR_LINE_INPUT_DIM; ++j) {
+            acc += nn->w1[i][j] * x[j];
+        }
+        h1[i] = relu(acc);
+    }
+
+    for (int i = 0; i < NNCAR_LINE_H2; ++i) {
+        float acc = nn->b2[i];
+        for (int j = 0; j < NNCAR_LINE_H1; ++j) {
+            acc += nn->w2[i][j] * h1[j];
+        }
+        h2[i] = relu(acc);
+    }
+
+    for (int i = 0; i < NNCAR_LINE_H3; ++i) {
+        float acc = nn->b3[i];
+        for (int j = 0; j < NNCAR_LINE_H2; ++j) {
+            acc += nn->w3[i][j] * h2[j];
+        }
+        h3[i] = relu(acc);
+    }
+
+    for (int k = 0; k < 2; ++k) {
+        float acc = nn->b4[k];
+        for (int j = 0; j < NNCAR_LINE_H3; ++j) {
+            acc += nn->w4[k][j] * h3[j];
+        }
+        y[k] = (k == 0) ? 1.0f / (1.0f + expf(-acc)) : tanhf(acc);
+    }
+}
+
 void nncar_line_reset(nncar_line_state_t *st)
 {
+    nncar_line_ctrl_t ctrl = st->ctrl;
+    const nncar_line_nn_t *nn = st->nn;
+
     memset(st, 0, sizeof(*st));
     st->mode = NNCAR_LINE_TRACKING;
+    st->ctrl = ctrl;
+    st->nn = nn;
+}
+
+void nncar_line_set_ctrl(nncar_line_state_t *st, nncar_line_ctrl_t ctrl,
+                         const nncar_line_nn_t *nn)
+{
+    st->ctrl = ctrl;
+    st->nn = nn;
 }
 
 static nncar_twist_t recovery_step(const nncar_profile_t *p,
@@ -89,8 +176,59 @@ static nncar_twist_t recovery_step(const nncar_profile_t *p,
     return nncar_twist_envelope(p, cmd, v_max_eff);
 }
 
+/* Deterministic PID teacher on lateral centroid offset (+ = line on the left). */
+static nncar_twist_t pid_step(const nncar_profile_t *p,
+                              nncar_line_state_t *st,
+                              const nncar_line_estimate_t *est,
+                              float v_desired,
+                              float v_max_eff,
+                              float dt_s)
+{
+    float e = est->centroid_m;
+    float de = 0.0f;
+
+    if (st->has_prev && dt_s > 1.0e-6f) {
+        de = (e - st->prev_centroid_m) / dt_s;
+    }
+    st->prev_centroid_m = e;
+    st->has_prev = true;
+
+    float fc = p->pid_d_filter_hz;
+    float alpha = (fc > 0.0f) ? (1.0f - expf(-2.0f * NNCAR_PI * fc * dt_s)) : 1.0f;
+    alpha = nncar_clampf(alpha, 0.0f, 1.0f);
+    st->d_filtered += alpha * (de - st->d_filtered);
+
+    float omega = p->pid_kp * e + p->pid_kd * st->d_filtered;
+
+    float slow = 1.0f - p->curve_slow_factor *
+                            fminf(1.0f, fabsf(omega) / fmaxf(p->omega_ref_radps, 1.0e-3f));
+    slow = nncar_clampf(slow, 0.1f, 1.0f);
+
+    nncar_twist_t cmd;
+    cmd.v = fminf(v_desired, v_max_eff) * slow;
+    cmd.omega = omega;
+    return nncar_twist_envelope(p, cmd, v_max_eff);
+}
+
+static nncar_twist_t mlp_step(const nncar_profile_t *p,
+                              const nncar_gray_frame_t *frame,
+                              const nncar_line_estimate_t *est,
+                              float v_desired,
+                              float v_max_eff,
+                              const nncar_line_nn_t *nn)
+{
+    float x[NNCAR_LINE_INPUT_DIM];
+    float y[2];
+
+    nncar_line_nn_input(p, frame, est, v_desired, x);
+    nncar_line_nn_eval(nn, x, y);
+
+    return nncar_twist_from_kappa(p, y[0], y[1], v_desired, v_max_eff);
+}
+
 nncar_twist_t nncar_line_step(const nncar_profile_t *p,
                               nncar_line_state_t *st,
+                              const nncar_gray_frame_t *frame,
                               const nncar_line_estimate_t *est,
                               float v_desired,
                               float v_max_eff,
@@ -140,31 +278,24 @@ nncar_twist_t nncar_line_step(const nncar_profile_t *p,
         return st->recovery_cmd;
     }
 
-    /* PID teacher on lateral centroid offset (+ = line on the left). */
-    float e = est->centroid_m;
-    float de = 0.0f;
-
-    if (st->has_prev && dt_s > 1.0e-6f) {
-        de = (e - st->prev_centroid_m) / dt_s;
-    }
-    st->prev_centroid_m = e;
-    st->has_prev = true;
-
-    float fc = p->pid_d_filter_hz;
-    float alpha = (fc > 0.0f) ? (1.0f - expf(-2.0f * NNCAR_PI * fc * dt_s)) : 1.0f;
-    alpha = nncar_clampf(alpha, 0.0f, 1.0f);
-    st->d_filtered += alpha * (de - st->d_filtered);
-
-    float omega = p->pid_kp * e + p->pid_kd * st->d_filtered;
-
-    float slow = 1.0f - p->curve_slow_factor *
-                            fminf(1.0f, fabsf(omega) / fmaxf(p->omega_ref_radps, 1.0e-3f));
-    slow = nncar_clampf(slow, 0.1f, 1.0f);
-
     nncar_twist_t cmd;
-    cmd.v = fminf(v_desired, v_max_eff) * slow;
-    cmd.omega = omega;
-    cmd = nncar_twist_envelope(p, cmd, v_max_eff);
+    bool use_mlp = (st->ctrl == NNCAR_LINE_CTRL_MLP) && (st->nn != NULL) &&
+                   (frame != NULL) && (frame->value != NULL);
+
+    if (use_mlp) {
+        cmd = mlp_step(p, frame, est, v_desired, v_max_eff, st->nn);
+        if (!nncar_finite(cmd.v) || !nncar_finite(cmd.omega)) {
+            use_mlp = false;   /* non-finite output: deterministic fallback */
+        }
+    }
+
+    if (!use_mlp) {
+        cmd = pid_step(p, st, est, v_desired, v_max_eff, dt_s);
+    } else {
+        /* Keep the PID derivative state warm so a mid-run fallback is smooth. */
+        st->prev_centroid_m = est->centroid_m;
+        st->has_prev = true;
+    }
 
     if (st->ramp_s < p->recovery_ramp_s) {
         st->ramp_s += dt_s;

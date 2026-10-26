@@ -60,9 +60,13 @@ typedef struct {
 
 void nncar_stack_init(nncar_stack_t *st, const nncar_profile_t *p);
 
-/* Select one of the three baselines; nn may be NULL for PI_RESIDUAL. */
+/* Select one of the three motor baselines; nn may be NULL for PI_RESIDUAL. */
 void nncar_stack_set_motor_mode(nncar_stack_t *st, nncar_motor_mode_t mode,
                                 const nncar_motor_nn_t *nn);
+
+/* Select PID or MLP LineFollower; nn may be NULL to force the PID path. */
+void nncar_stack_set_line_ctrl(nncar_stack_t *st, nncar_line_ctrl_t ctrl,
+                               const nncar_line_nn_t *nn);
 
 nncar_stack_output_t nncar_stack_step(nncar_stack_t *st,
                                       const nncar_profile_t *p,
