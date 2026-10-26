@@ -99,6 +99,46 @@ static void test_mlp_contract(const nncar_profile_t *p, float v_max_eff,
     nncar_line_nn_eval(&head, x, y);
     CHECK_NEAR(y[0], 1.0f / (1.0f + expf(-2.0f)), 1.0e-6f);
     CHECK_NEAR(y[1], tanhf(1.0f), 1.0e-6f);
+
+    /*
+     * The bench-calibrated loop gain scales the NN curvature output, and only
+     * the NN path: the PID must be bit-identical for any gain.
+     */
+    static nncar_line_nn_t gentle;
+    nncar_line_nn_zero(&gentle);
+    gentle.b4[0] = 2.0f;
+    gentle.b4[1] = 0.2f;
+
+    nncar_profile_t tuned = *p;
+    float mlp_w[2];
+    float pid_w[2];
+
+    for (int g = 0; g < 2; ++g) {
+        tuned.line_kappa_gain = (g == 0) ? 1.0f : 2.0f;
+
+        nncar_line_state_t ls;
+        nncar_line_reset(&ls);
+        nncar_line_set_ctrl(&ls, NNCAR_LINE_CTRL_MLP, &gentle);
+        nncar_twist_t tw2 = {0.0f, 0.0f};
+        for (int i = 0; i < 30; ++i) {
+            tw2 = nncar_line_step(&tuned, &ls, clean, est, 0.9f, v_max_eff,
+                                  (float)i * tuned.line_dt_s, tuned.line_dt_s);
+        }
+        mlp_w[g] = tw2.omega;
+
+        nncar_line_state_t ps;
+        nncar_line_reset(&ps);
+        nncar_line_set_ctrl(&ps, NNCAR_LINE_CTRL_PID, NULL);
+        for (int i = 0; i < 30; ++i) {
+            tw2 = nncar_line_step(&tuned, &ps, clean, est, 0.9f, v_max_eff,
+                                  (float)i * tuned.line_dt_s, tuned.line_dt_s);
+        }
+        pid_w[g] = tw2.omega;
+    }
+
+    CHECK(mlp_w[0] > 0.0f);
+    CHECK(mlp_w[1] > 1.4f * mlp_w[0]);
+    CHECK_NEAR(pid_w[0], pid_w[1], 1.0e-9f);
 }
 
 int main(void)

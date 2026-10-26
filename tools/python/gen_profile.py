@@ -34,6 +34,7 @@ FIELDS = [
     ("line.a_lat_max_mps2", "a_lat_max_mps2", "f"),
     ("line.curve_slow_factor", "curve_slow_factor", "f"),
     ("line.omega_ref_radps", "omega_ref_radps", "f"),
+    ("line.kappa_gain", "line_kappa_gain", "f"),
 
     ("confidence.enter_low", "conf_enter_low", "f"),
     ("confidence.exit_high", "conf_exit_high", "f"),

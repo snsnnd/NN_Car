@@ -20,7 +20,8 @@
     "kappa_ref": 6.0,
     "a_lat_max_mps2": 3.5,
     "curve_slow_factor": 0.5,
-    "omega_ref_radps": 3.0
+    "omega_ref_radps": 3.0,
+    "kappa_gain": 1.8
   },
   "confidence": {
     "enter_low": 0.25,

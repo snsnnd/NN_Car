@@ -237,10 +237,17 @@ static nncar_twist_t mlp_step(const nncar_profile_t *p,
     nncar_line_nn_input(p, frame, est, v_desired, x);
     nncar_line_nn_eval(nn, x, y);
 
-    nncar_twist_t twist = nncar_twist_from_kappa(p, y[0], y[1], v_desired, v_max_eff);
+    /*
+     * Per-sample MSE training makes the network return the conditional mean of
+     * kappa, which under-shoots the amplitude the closed loop needs. The bench
+     * calibrated loop gain restores it; 1.0 reproduces the raw network.
+     */
+    float kg = nncar_clampf(y[1] * p->line_kappa_gain, -1.0f, 1.0f);
+
+    nncar_twist_t twist = nncar_twist_from_kappa(p, y[0], kg, v_desired, v_max_eff);
 
     /* Same comfort envelope as the PID: shed speed as the yaw rate grows. */
-    float kappa = nncar_clampf(y[1], -1.0f, 1.0f) * p->kappa_ref;
+    float kappa = kg * p->kappa_ref;
     float slow = curve_slow(p, twist.omega);
     twist.v *= slow;
     twist.omega = kappa * twist.v;

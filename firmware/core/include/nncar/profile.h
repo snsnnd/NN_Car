@@ -28,6 +28,13 @@ typedef struct {
     float a_lat_max_mps2;
     float curve_slow_factor;
     float omega_ref_radps;
+    /*
+     * Loop gain on the NN curvature output (1.0 = raw network). The network is
+     * trained on per-sample MSE, which systematically under-shoots the
+     * amplitude; this knob is calibrated on the closed-loop bench, exactly like
+     * pid_kp. It is NOT applied to the PID path.
+     */
+    float line_kappa_gain;
 
     /* confidence and handover */
     float conf_enter_low;
