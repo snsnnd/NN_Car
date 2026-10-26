@@ -1,5 +1,7 @@
 #include "nncar/motor.h"
 
+#include "nncar/nn.h"
+
 #include <math.h>
 #include <string.h>
 
@@ -26,47 +28,22 @@ void nncar_motor_nn_zero(nncar_motor_nn_t *nn)
     memset(nn, 0, sizeof(*nn));
 }
 
-static float nncar_relu(float x)
-{
-    return (x > 0.0f) ? x : 0.0f;
-}
-
 float nncar_motor_nn_eval(const nncar_motor_nn_t *nn,
                           const float x[NNCAR_MOTOR_INPUT_DIM])
 {
-    float h1[NNCAR_MOTOR_H1];
-    float h2[NNCAR_MOTOR_H2];
-    float h3[NNCAR_MOTOR_H3];
+    const nncar_nn_layer_t layers[4] = {
+        {NNCAR_MOTOR_INPUT_DIM, NNCAR_MOTOR_H1, NNCAR_NN_ACT_RELU, &nn->w1[0][0], nn->b1},
+        {NNCAR_MOTOR_H1, NNCAR_MOTOR_H2, NNCAR_NN_ACT_RELU, &nn->w2[0][0], nn->b2},
+        {NNCAR_MOTOR_H2, NNCAR_MOTOR_H3, NNCAR_NN_ACT_RELU, &nn->w3[0][0], nn->b3},
+        {NNCAR_MOTOR_H3, 1, NNCAR_NN_ACT_NONE, &nn->w4[0][0], nn->b4},
+    };
+    const nncar_nn_model_t model = {layers, 4};
+    float scratch[2 * NNCAR_MOTOR_H1];
+    float z[1];
 
-    for (int i = 0; i < NNCAR_MOTOR_H1; ++i) {
-        float acc = nn->b1[i];
-        for (int j = 0; j < NNCAR_MOTOR_INPUT_DIM; ++j) {
-            acc += nn->w1[i][j] * x[j];
-        }
-        h1[i] = nncar_relu(acc);
-    }
+    nncar_nn_forward(&model, x, z, scratch);
 
-    for (int i = 0; i < NNCAR_MOTOR_H2; ++i) {
-        float acc = nn->b2[i];
-        for (int j = 0; j < NNCAR_MOTOR_H1; ++j) {
-            acc += nn->w2[i][j] * h1[j];
-        }
-        h2[i] = nncar_relu(acc);
-    }
-
-    for (int i = 0; i < NNCAR_MOTOR_H3; ++i) {
-        float acc = nn->b3[i];
-        for (int j = 0; j < NNCAR_MOTOR_H2; ++j) {
-            acc += nn->w3[i][j] * h2[j];
-        }
-        h3[i] = nncar_relu(acc);
-    }
-
-    float out = nn->b4[0];
-    for (int j = 0; j < NNCAR_MOTOR_H3; ++j) {
-        out += nn->w4[0][j] * h3[j];
-    }
-    return tanhf(out);
+    return tanhf(z[0]);
 }
 
 void nncar_motor_nn_input(const nncar_profile_t *p,

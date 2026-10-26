@@ -49,6 +49,7 @@ add_library(nncar_core STATIC
   firmware/core/src/line.c
   firmware/core/src/mixer.c
   firmware/core/src/motor.c
+  firmware/core/src/nn.c
   firmware/core/src/safety.c
   firmware/core/src/sim.c
   firmware/core/src/stack.c
@@ -91,7 +92,7 @@ target_link_libraries(nncar_line_ab PRIVATE nncar_core)
 
 enable_testing()
 
-foreach(t gray line mixer motor safety sim)
+foreach(t gray line mixer motor nn safety sim)
   add_executable(test_${t} firmware/tests/test_${t}.c)
   target_include_directories(test_${t} PRIVATE firmware/tests)
   target_compile_options(test_${t} PRIVATE ${NNCAR_WARN} ${NNCAR_FP})

@@ -1,11 +1,8 @@
 #include "nncar/line.h"
 
-#include <string.h>
+#include "nncar/nn.h"
 
-static float relu(float x)
-{
-    return (x > 0.0f) ? x : 0.0f;
-}
+#include <string.h>
 
 static float omega_limit(const nncar_profile_t *p, float v, float v_max_eff)
 {
@@ -116,41 +113,24 @@ void nncar_line_history_update(const nncar_profile_t *p,
 void nncar_line_nn_eval(const nncar_line_nn_t *nn,
                         const float x[NNCAR_LINE_INPUT_DIM], float y[2])
 {
-    float h1[NNCAR_LINE_H1];
-    float h2[NNCAR_LINE_H2];
-    float h3[NNCAR_LINE_H3];
+    /*
+     * The runtime carries the three ReLU hidden layers; the head stays here
+     * because s_v and kappa need different activations.
+     */
+    const nncar_nn_layer_t layers[4] = {
+        {NNCAR_LINE_INPUT_DIM, NNCAR_LINE_H1, NNCAR_NN_ACT_RELU, &nn->w1[0][0], nn->b1},
+        {NNCAR_LINE_H1, NNCAR_LINE_H2, NNCAR_NN_ACT_RELU, &nn->w2[0][0], nn->b2},
+        {NNCAR_LINE_H2, NNCAR_LINE_H3, NNCAR_NN_ACT_RELU, &nn->w3[0][0], nn->b3},
+        {NNCAR_LINE_H3, 2, NNCAR_NN_ACT_NONE, &nn->w4[0][0], nn->b4},
+    };
+    const nncar_nn_model_t model = {layers, 4};
+    float scratch[2 * NNCAR_LINE_H1];
+    float z[2];
 
-    for (int i = 0; i < NNCAR_LINE_H1; ++i) {
-        float acc = nn->b1[i];
-        for (int j = 0; j < NNCAR_LINE_INPUT_DIM; ++j) {
-            acc += nn->w1[i][j] * x[j];
-        }
-        h1[i] = relu(acc);
-    }
+    nncar_nn_forward(&model, x, z, scratch);
 
-    for (int i = 0; i < NNCAR_LINE_H2; ++i) {
-        float acc = nn->b2[i];
-        for (int j = 0; j < NNCAR_LINE_H1; ++j) {
-            acc += nn->w2[i][j] * h1[j];
-        }
-        h2[i] = relu(acc);
-    }
-
-    for (int i = 0; i < NNCAR_LINE_H3; ++i) {
-        float acc = nn->b3[i];
-        for (int j = 0; j < NNCAR_LINE_H2; ++j) {
-            acc += nn->w3[i][j] * h2[j];
-        }
-        h3[i] = relu(acc);
-    }
-
-    for (int k = 0; k < 2; ++k) {
-        float acc = nn->b4[k];
-        for (int j = 0; j < NNCAR_LINE_H3; ++j) {
-            acc += nn->w4[k][j] * h3[j];
-        }
-        y[k] = (k == 0) ? 1.0f / (1.0f + expf(-acc)) : tanhf(acc);
-    }
+    y[0] = 1.0f / (1.0f + expf(-z[0]));
+    y[1] = tanhf(z[1]);
 }
 
 void nncar_line_reset(nncar_line_state_t *st)
