@@ -16,7 +16,16 @@ set(GEN_DIR ${CMAKE_BINARY_DIR}/generated)
 set(PROFILE_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/vehicle_default.json)
 set(WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/motor_nn_weights.json)
 set(LINE_WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/line_nn_weights.json)
+file(GLOB MAP_JSONS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/configs/maps/*.json)
 file(MAKE_DIRECTORY ${GEN_DIR})
+
+add_custom_command(
+  OUTPUT ${GEN_DIR}/nncar_maps_generated.c
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/gen_maps.py
+          ${GEN_DIR}/nncar_maps_generated.c ${MAP_JSONS}
+  DEPENDS ${MAP_JSONS} ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/gen_maps.py
+  COMMENT "Generating track maps from configs/maps/*.json"
+  VERBATIM)
 
 add_custom_command(
   OUTPUT ${GEN_DIR}/nncar_profile_generated.c
@@ -47,12 +56,14 @@ add_custom_command(
 add_library(nncar_core STATIC
   firmware/core/src/gray.c
   firmware/core/src/line.c
+  firmware/core/src/map.c
   firmware/core/src/mixer.c
   firmware/core/src/motor.c
   firmware/core/src/safety.c
   firmware/core/src/sim.c
   firmware/core/src/stack.c
   firmware/core/src/velocity.c
+  ${GEN_DIR}/nncar_maps_generated.c
   ${GEN_DIR}/nncar_profile_generated.c
   ${GEN_DIR}/nncar_motor_nn_generated.c
   ${GEN_DIR}/nncar_line_nn_generated.c)
@@ -91,7 +102,7 @@ target_link_libraries(nncar_line_ab PRIVATE nncar_core)
 
 enable_testing()
 
-foreach(t gray line mixer motor safety sim)
+foreach(t gray line map mixer motor safety sim)
   add_executable(test_${t} firmware/tests/test_${t}.c)
   target_include_directories(test_${t} PRIVATE firmware/tests)
   target_compile_options(test_${t} PRIVATE ${NNCAR_WARN} ${NNCAR_FP})

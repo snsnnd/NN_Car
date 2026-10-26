@@ -14,6 +14,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import gen_line_nn  # noqa: E402
+import gen_maps  # noqa: E402
 import gen_motor_nn  # noqa: E402
 import gen_profile  # noqa: E402
 import golden  # noqa: E402
@@ -24,6 +25,7 @@ ROOT = HERE.parents[1]
 CONFIG = ROOT / "configs" / "vehicle_default.json"
 WEIGHTS = ROOT / "configs" / "motor_nn_weights.json"
 LINE_WEIGHTS = ROOT / "configs" / "line_nn_weights.json"
+MAP_JSON = ROOT / "configs" / "maps" / "erth_grid.json"
 SCHEMA = ROOT / "tools" / "schema" / "run_log.schema.json"
 
 FAILURES: list[str] = []
@@ -326,12 +328,45 @@ def test_line_nn_generation(tmp: Path) -> None:
             pass
 
 
+def test_map_generation(tmp: Path) -> None:
+    doc = gen_maps.load_map(MAP_JSON)
+    text = gen_maps.render([doc], [str(MAP_JSON)])
+
+    check(doc["name"] == "erth_grid", "map: unexpected name")
+    check(len(doc["edges"]) == 105, f"map: edge count {len(doc['edges'])} != 105")
+    check(len(doc["nodes"]) == 87, f"map: node count {len(doc['nodes'])} != 87")
+    check("nncar_map_erth_grid" in text, "map: C struct missing")
+    check(".segment_count = 105" in text, "map: segment count not rendered")
+    check(".start_x = 9.30000f" in text, "map: start pose not rendered")
+
+    broken = json.loads(MAP_JSON.read_text(encoding="utf-8"))
+    del broken["source"]
+    path = tmp / "broken_map.json"
+    path.write_text(json.dumps(broken), encoding="utf-8")
+    try:
+        gen_maps.load_map(path)
+        check(False, "map: missing source was not rejected")
+    except KeyError:
+        pass
+
+    broken = json.loads(MAP_JSON.read_text(encoding="utf-8"))
+    broken["edges"].append([2, 999])
+    path = tmp / "broken_edge.json"
+    path.write_text(json.dumps(broken), encoding="utf-8")
+    try:
+        gen_maps.load_map(path)
+        check(False, "map: missing edge endpoint was not rejected")
+    except ValueError:
+        pass
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         test_profile_generation(tmp)
         test_motor_nn_generation(tmp)
         test_line_nn_generation(tmp)
+        test_map_generation(tmp)
         test_validation(tmp)
         test_golden(tmp)
         test_identification(tmp)

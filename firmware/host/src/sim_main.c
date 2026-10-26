@@ -10,6 +10,7 @@
 typedef struct {
     const char *out;
     const char *manifest;
+    const char *map_name;
     float duration_s;
     float v_desired;
     float offset_m;
@@ -17,6 +18,9 @@ typedef struct {
     float amp_m;
     float wavelength_m;
     float rail_v;
+    bool list_maps;
+    bool offset_set;
+    bool heading_set;
 } options_t;
 
 typedef struct {
@@ -28,7 +32,8 @@ static void usage(const char *argv0)
     fprintf(stderr,
             "usage: %s [--out run.csv] [--manifest manifest.json]\n"
             "          [--duration 8] [--v 0.9] [--offset 0.02] [--heading-deg 3]\n"
-            "          [--amp 0] [--wavelength 1.0] [--rail 12.0]\n",
+            "          [--amp 0] [--wavelength 1.0] [--rail 12.0]\n"
+            "          [--map <name>] [--list-maps]\n",
             argv0);
 }
 
@@ -36,6 +41,7 @@ static int parse(int argc, char **argv, options_t *o)
 {
     o->out = NULL;
     o->manifest = NULL;
+    o->map_name = NULL;
     o->duration_s = 8.0f;
     o->v_desired = 0.9f;
     o->offset_m = 0.02f;
@@ -43,6 +49,9 @@ static int parse(int argc, char **argv, options_t *o)
     o->amp_m = 0.0f;
     o->wavelength_m = 1.0f;
     o->rail_v = 12.0f;
+    o->list_maps = false;
+    o->offset_set = false;
+    o->heading_set = false;
 
     for (int i = 1; i < argc; ++i) {
         const char *a = argv[i];
@@ -50,14 +59,20 @@ static int parse(int argc, char **argv, options_t *o)
             o->out = argv[++i];
         } else if (strcmp(a, "--manifest") == 0 && i + 1 < argc) {
             o->manifest = argv[++i];
+        } else if (strcmp(a, "--map") == 0 && i + 1 < argc) {
+            o->map_name = argv[++i];
+        } else if (strcmp(a, "--list-maps") == 0) {
+            o->list_maps = true;
         } else if (strcmp(a, "--duration") == 0 && i + 1 < argc) {
             o->duration_s = (float)atof(argv[++i]);
         } else if (strcmp(a, "--v") == 0 && i + 1 < argc) {
             o->v_desired = (float)atof(argv[++i]);
         } else if (strcmp(a, "--offset") == 0 && i + 1 < argc) {
             o->offset_m = (float)atof(argv[++i]);
+            o->offset_set = true;
         } else if (strcmp(a, "--heading-deg") == 0 && i + 1 < argc) {
             o->heading_deg = (float)atof(argv[++i]);
+            o->heading_set = true;
         } else if (strcmp(a, "--amp") == 0 && i + 1 < argc) {
             o->amp_m = (float)atof(argv[++i]);
         } else if (strcmp(a, "--wavelength") == 0 && i + 1 < argc) {
@@ -109,14 +124,33 @@ static void write_manifest(const char *path, const options_t *o, const nncar_pro
             "    \"amp_m\": %.3f,\n"
             "    \"wavelength_m\": %.3f,\n"
             "    \"rail_v\": %.2f\n"
-            "  }\n"
-            "}\n",
+            "  },\n",
             nncar_profile_name(), nncar_profile_version(),
             nncar_profile_is_verified() ? "true" : "false",
             (commit != NULL) ? commit : "unknown", (double)p->motor_dt_s,
             (double)p->line_dt_s, (double)o->duration_s, (double)o->v_desired,
             (double)o->offset_m, (double)o->heading_deg, (double)o->amp_m,
             (double)o->wavelength_m, (double)o->rail_v);
+
+    const nncar_map_t *map = nncar_map_find(o->map_name);
+    if (map != NULL) {
+        fprintf(fp,
+                "  \"map\": {\n"
+                "    \"name\": \"%s\",\n"
+                "    \"version\": \"%s\",\n"
+                "    \"source\": \"%s\",\n"
+                "    \"segment_count\": %d,\n"
+                "    \"start_x_m\": %.4f,\n"
+                "    \"start_y_m\": %.4f,\n"
+                "    \"start_theta_rad\": %.6f\n"
+                "  }\n",
+                map->name, map->version, map->source, map->segment_count,
+                (double)map->start_x, (double)map->start_y,
+                (double)map->start_theta);
+    } else {
+        fprintf(fp, "  \"map\": null\n");
+    }
+    fprintf(fp, "}\n");
 
     fclose(fp);
 }
@@ -136,6 +170,18 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    if (opt.list_maps) {
+        for (int i = 0; i < nncar_map_count(); ++i) {
+            const nncar_map_t *m = nncar_map_at(i);
+            printf("%-16s v%s  segments=%3d  x=[%.2f, %.2f] y=[%.2f, %.2f]  start=(%.2f, %.2f)\n",
+                   m->name, m->version, m->segment_count,
+                   (double)m->x_min, (double)m->x_max,
+                   (double)m->y_min, (double)m->y_max,
+                   (double)m->start_x, (double)m->start_y);
+        }
+        return 0;
+    }
+
     const nncar_profile_t *p = nncar_profile_default();
 
     fprintf(stderr, "profile: %s v%s verified=%s\n", nncar_profile_name(),
@@ -144,11 +190,37 @@ int main(int argc, char **argv)
         fprintf(stderr, "warning: profile contains unverified placeholder parameters\n");
     }
 
+    const nncar_map_t *map = NULL;
+    if (opt.map_name != NULL) {
+        map = nncar_map_find(opt.map_name);
+        if (map == NULL) {
+            fprintf(stderr, "unknown map: %s (use --list-maps)\n", opt.map_name);
+            return 2;
+        }
+    }
+
     nncar_sim_t sim;
-    nncar_sim_init(&sim, p, 0.0f, opt.offset_m, opt.heading_deg * NNCAR_PI / 180.0f,
-                   opt.rail_v);
-    sim.track_amp_m = opt.amp_m;
-    sim.track_wavelength_m = opt.wavelength_m;
+    if (map != NULL) {
+        if (!opt.offset_set) {
+            opt.offset_m = 0.0f;
+        }
+        if (!opt.heading_set) {
+            opt.heading_deg = 0.0f;
+        }
+        const float theta0 = map->start_theta + opt.heading_deg * NNCAR_PI / 180.0f;
+        const float x0 = map->start_x - sinf(theta0) * opt.offset_m;
+        const float y0 = map->start_y + cosf(theta0) * opt.offset_m;
+        nncar_sim_init(&sim, p, x0, y0, theta0, opt.rail_v);
+        nncar_sim_set_map(&sim, map);
+        fprintf(stderr, "map: %s v%s segments=%d start=(%.3f, %.3f) theta=%.3frad\n",
+                map->name, map->version, map->segment_count,
+                (double)x0, (double)y0, (double)theta0);
+    } else {
+        nncar_sim_init(&sim, p, 0.0f, opt.offset_m,
+                       opt.heading_deg * NNCAR_PI / 180.0f, opt.rail_v);
+        sim.track_amp_m = opt.amp_m;
+        sim.track_wavelength_m = opt.wavelength_m;
+    }
 
     nncar_logger_t logger;
     if (nncar_log_open(&logger, opt.out) != 0) {

@@ -87,7 +87,7 @@ nncar_sim_run_result_t nncar_sim_run(const nncar_profile_t *p,
             have_edge = true;
         }
 
-        float lat = sim->y - nncar_sim_track_y(sim->x, sim);
+        float lat = nncar_sim_lateral_error(sim);
         if (fabsf(lat) > res.max_lat_m) {
             res.max_lat_m = fabsf(lat);
         }
