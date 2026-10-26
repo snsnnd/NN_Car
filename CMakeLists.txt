@@ -16,6 +16,7 @@ set(GEN_DIR ${CMAKE_BINARY_DIR}/generated)
 set(PROFILE_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/vehicle_default.json)
 set(WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/motor_nn_weights.json)
 set(LINE_WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/line_nn_weights.json)
+set(DIRECT_WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/motor_nn_direct.json)
 file(MAKE_DIRECTORY ${GEN_DIR})
 
 add_custom_command(
@@ -44,6 +45,15 @@ add_custom_command(
   COMMENT "Generating trained line MLP from ${LINE_WEIGHTS_JSON}"
   VERBATIM)
 
+add_custom_command(
+  OUTPUT ${GEN_DIR}/nncar_motor_nn_direct_generated.c
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/gen_motor_nn.py
+          ${DIRECT_WEIGHTS_JSON} ${GEN_DIR}/nncar_motor_nn_direct_generated.c
+  DEPENDS ${DIRECT_WEIGHTS_JSON}
+          ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/gen_motor_nn.py
+  COMMENT "Generating standalone motor policy from ${DIRECT_WEIGHTS_JSON}"
+  VERBATIM)
+
 add_library(nncar_core STATIC
   firmware/core/src/calib.c
   firmware/core/src/gray.c
@@ -57,6 +67,7 @@ add_library(nncar_core STATIC
   firmware/core/src/velocity.c
   ${GEN_DIR}/nncar_profile_generated.c
   ${GEN_DIR}/nncar_motor_nn_generated.c
+  ${GEN_DIR}/nncar_motor_nn_direct_generated.c
   ${GEN_DIR}/nncar_line_nn_generated.c)
 
 target_include_directories(nncar_core PUBLIC firmware/core/include)

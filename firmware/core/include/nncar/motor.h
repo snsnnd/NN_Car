@@ -10,19 +10,25 @@
 #define NNCAR_MOTOR_H3 8
 
 /*
- * Three baselines, in increasing order of capability:
+ * Four baselines, in increasing order of capability:
  *   PI            Kp*e + Ki*integral only (no feedforward, no deadband comp)
  *   PI_FF         + Kff*v_target/v_max_eff feedforward, rail scaling and
  *                   deterministic deadband compensation
  *   PI_RESIDUAL   + alpha * tanh(MLP(x_motor))
+ *   NN_DIRECT     u_cmd = tanh(MLP(x_motor)) with x[3] held at 0: no PI, no
+ *                   integrator. This exists only to answer "can the network
+ *                   replace the loop instead of correcting it"; it has no
+ *                   memory, so steady-state error is expected.
  *
  * PI_RESIDUAL with a zero (or absent) network evaluates to exactly PI_FF, so
- * the safe degradation path is the same code with u_nn = 0.
+ * the safe degradation path is the same code with u_nn = 0. NN_DIRECT falls
+ * back to PI_FF when the network is absent.
  */
 typedef enum {
     NNCAR_MOTOR_MODE_PI = 0,
     NNCAR_MOTOR_MODE_PI_FF = 1,
-    NNCAR_MOTOR_MODE_PI_RESIDUAL = 2
+    NNCAR_MOTOR_MODE_PI_RESIDUAL = 2,
+    NNCAR_MOTOR_MODE_NN_DIRECT = 3
 } nncar_motor_mode_t;
 
 /* 7 -> 32 -> 16 -> 8 -> 1, 929 parameters, FP32. */
@@ -84,6 +90,9 @@ float nncar_motor_nn_eval(const nncar_motor_nn_t *nn,
 
 /* Trained weights, generated from configs/motor_nn_weights.json. */
 const nncar_motor_nn_t *nncar_motor_nn_trained(void);
+
+/* Standalone policy weights, generated from configs/motor_nn_direct.json. */
+const nncar_motor_nn_t *nncar_motor_nn_direct_trained(void);
 
 /* Frozen input contract, exposed so tests can pin the normalization. */
 void nncar_motor_nn_input(const nncar_profile_t *p,

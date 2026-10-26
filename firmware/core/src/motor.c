@@ -80,6 +80,26 @@ nncar_motor_out_t nncar_motor_step(const nncar_profile_t *p,
         return out;
     }
 
+    /* Standalone policy: no PI, no integrator, no memory. Falls back to PI+FF
+     * when the network is absent, which is the only safe degradation here. */
+    if (cfg->mode == NNCAR_MOTOR_MODE_NN_DIRECT && cfg->nn != NULL) {
+        float x[NNCAR_MOTOR_INPUT_DIM];
+        nncar_motor_nn_input(p, in, 0.0f, st->applied_pwm, x);
+        float t = nncar_motor_nn_eval(cfg->nn, x);
+        float u = nncar_finite(t) ? nncar_clampf(t, -1.0f, 1.0f) : 0.0f;
+
+        st->integral = 0.0f;
+        st->u = u;
+        st->applied_pwm = nncar_deadband_compensate(p, u);
+        st->enable_prev = true;
+
+        out.u_pi = 0.0f;
+        out.u_nn = u;
+        out.u_cmd = u;
+        out.pwm = st->applied_pwm;
+        return out;
+    }
+
     const bool feedforward = cfg->mode != NNCAR_MOTOR_MODE_PI;
 
     float error = in->target_mps - in->actual_mps;

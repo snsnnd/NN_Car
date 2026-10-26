@@ -196,15 +196,88 @@ def nominal(profile: dict, net: dict) -> dict:
     return out
 
 
+def rollout_direct(profile: dict, plant_params: np.ndarray, targets: np.ndarray,
+                   rail: np.ndarray, valid: np.ndarray, net: dict) -> float:
+    """Closed loop where the network *is* the controller: no PI, no integrator.
+
+    The teacher command is ``u_pi + alpha * t`` while the state the network sees
+    holds ``u_pi`` at zero, so any steady-state error the PI would have removed
+    has to be reproduced from (target, actual, previous pwm, rail) alone.
+    """
+    ctrl = mt.Controller(profile, "pi_ff")
+    plant = mt.Plant(float(plant_params[0]), float(plant_params[1]),
+                     float(plant_params[2]), ctrl.v_max_nom, ctrl.rail_nom)
+    plant.v = float(plant_params[3])
+
+    total = 0.0
+    count = 0
+    for i in range(targets.shape[0]):
+        v = plant.v
+        rail_v = float(rail[i])
+        rail_ratio = (rail_v / ctrl.rail_nom) if valid[i] else 1.0
+        prev_pwm = ctrl.applied_pwm
+
+        x = mt.features(ctrl.v_max_nom, ctrl.scale_min, ctrl.scale_max,
+                        float(targets[i]), v, prev_pwm, 0.0, rail_ratio,
+                        bool(valid[i]))
+        u = float(mt.forward(net, x)[0])
+        pwm = ctrl.compensate(float(np.clip(u, -1.0, 1.0)))
+        ctrl.applied_pwm = pwm
+        plant.step(pwm, rail_v)
+
+        if i >= 25:
+            err = float(targets[i]) - plant.v
+            total += err * err
+            count += 1
+
+    return math.sqrt(total / count) if count else 0.0
+
+
+def evaluate_direct(profile: dict, data: dict, held_out: list[int],
+                    net: dict) -> dict:
+    params = data["params"]
+    targets = data["targets"]
+    rail = data["rail"]
+    valid = data["valid"]
+
+    rms_ff = []
+    rms_nn = []
+    for ep in held_out:
+        rms_ff.append(rollout(profile, params[ep], targets[ep], rail[ep], valid[ep], None))
+        rms_nn.append(rollout_direct(profile, params[ep], targets[ep], rail[ep],
+                                     valid[ep], net))
+
+    rms_ff_a = float(np.sqrt(np.mean(np.square(rms_ff))))
+    rms_nn_a = float(np.sqrt(np.mean(np.square(rms_nn))))
+
+    return {"rms_ff": rms_ff_a, "rms_nn": rms_nn_a,
+            "improvement": 1.0 - rms_nn_a / rms_ff_a}
+
+
+def nominal_direct(profile: dict, net: dict) -> dict:
+    steps = int(3.0 / mt.DT_S)
+    targets = np.zeros(steps, dtype=np.float32)
+    targets[int(0.2 / mt.DT_S):int(1.6 / mt.DT_S)] = 0.8
+    targets[int(1.6 / mt.DT_S):] = 0.4
+    rail = np.full(steps, 12.0, dtype=np.float32)
+    valid = np.ones(steps, dtype=np.int8)
+    params = np.array([1.5, 0.05, 0.07, 0.0], dtype=np.float32)
+
+    out = {"pi_ff": rollout(profile, params, targets, rail, valid, None),
+           "direct": rollout_direct(profile, params, targets, rail, valid, net)}
+    out["improvement"] = 1.0 - out["direct"] / out["pi_ff"]
+    return out
+
+
 def export_json(path: Path, net: dict, profile: dict, meta: dict) -> None:
+    direct = bool(meta.get("direct", False))
     doc = {
         "schema_version": "1.0.0",
-        "model": "residual_mlp",
+        "model": "direct_mlp" if direct else "residual_mlp",
         "input_dim": mt.INPUT_DIM,
         "hidden": list(HIDDEN),
         "activation": "relu",
         "output": "tanh",
-        "alpha": float(profile["motor"]["alpha"]),
         "trained": True,
         "seed": meta["seed"],
         "epochs": meta["epochs"],
@@ -220,6 +293,8 @@ def export_json(path: Path, net: dict, profile: dict, meta: dict) -> None:
             "w4": [HIDDEN[2], 1], "b4": [1],
         },
     }
+    if not direct:
+        doc["alpha"] = float(profile["motor"]["alpha"])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
@@ -234,6 +309,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dagger", type=int, default=2)
     parser.add_argument("--dagger-episodes", type=int, default=120)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--direct", action="store_true",
+                        help="train a standalone policy (no PI anchor) instead")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -255,16 +332,31 @@ def main(argv: list[str]) -> int:
     held_out = [int(e) for e in order[split:]]
 
     mask = np.isin(data["episode"], [int(e) for e in order[:split]])
-    x = data["x"][mask].astype(np.float32)
-    t = data["t"][mask].astype(np.float32)
     val_mask = np.isin(data["episode"], held_out)
-    x_val = data["x"][val_mask].astype(np.float32)
-    t_val = data["t"][val_mask].astype(np.float32)
+
+    if args.direct:
+        # A standalone policy never sees the PI state, so x[3] is pinned to 0
+        # and the label is the teacher's absolute command, not its residual.
+        alpha = float(profile["motor"]["alpha"])
+        xs = data["x"].astype(np.float32).copy()
+        labels = np.clip(xs[:, 3] + alpha * data["t"], -1.0, 1.0).astype(np.float32)
+        xs[:, 3] = 0.0
+        x = xs[mask]
+        t = labels[mask]
+        x_val = xs[val_mask]
+        t_val = labels[val_mask]
+    else:
+        x = data["x"][mask].astype(np.float32)
+        t = data["t"][mask].astype(np.float32)
+        x_val = data["x"][val_mask].astype(np.float32)
+        t_val = data["t"][val_mask].astype(np.float32)
 
     net = init_net(np.random.default_rng(args.seed))
     net = train(net, x, t, x_val, t_val, args.epochs, args.seed)
 
-    for it in range(args.dagger):
+    dagger_rounds = 0 if args.direct else args.dagger
+
+    for it in range(dagger_rounds):
         def residual_fn(sample: np.ndarray, w=net) -> float:
             return float(mt.forward(w, sample)[0])
 
@@ -280,8 +372,12 @@ def main(argv: list[str]) -> int:
     zero_mse = float(np.mean(t_val ** 2))
     r2 = 1.0 - val_mse / zero_mse
 
-    closed = evaluate(profile, data, held_out, net)
-    nom = nominal(profile, net)
+    if args.direct:
+        closed = evaluate_direct(profile, data, held_out, net)
+        nom = nominal_direct(profile, net)
+    else:
+        closed = evaluate(profile, data, held_out, net)
+        nom = nominal(profile, net)
 
     metrics = {
         "val_mse": val_mse,
@@ -290,24 +386,26 @@ def main(argv: list[str]) -> int:
         "heldout_rms_nn": closed["rms_nn"],
         "heldout_improvement": closed["improvement"],
         "nominal_rms_ff": nom["pi_ff"],
-        "nominal_rms_nn": nom["residual"],
+        "nominal_rms_nn": nom["direct"] if args.direct else nom["residual"],
         "nominal_improvement": nom["improvement"],
     }
 
     if not args.quiet:
+        label = "direct" if args.direct else "residual"
         print(f"train_motor_nn: train={x.shape[0]} val={x_val.shape[0]} "
-              f"samples, epochs={args.epochs}, dagger={args.dagger}")
+              f"samples, epochs={args.epochs}, dagger={dagger_rounds}")
         print(f"  teacher fit: val MSE={val_mse:.5f} (zero={zero_mse:.5f}) R2={r2:.4f}")
         print(f"  held-out closed loop: PI+FF={closed['rms_ff']:.5f} "
-              f"residual={closed['rms_nn']:.5f} "
+              f"{label}={closed['rms_nn']:.5f} "
               f"({closed['improvement'] * 100.0:+.1f}%)")
         print(f"  nominal closed loop: PI+FF={nom['pi_ff']:.5f} "
-              f"residual={nom['residual']:.5f} ({nom['improvement'] * 100.0:+.1f}%)")
+              f"{label}={metrics['nominal_rms_nn']:.5f} "
+              f"({nom['improvement'] * 100.0:+.1f}%)")
 
     export_json(Path(args.out_json), net, profile,
                 {"seed": args.seed, "epochs": args.epochs,
-                 "dagger": args.dagger, "samples": int(x.shape[0]),
-                 "metrics": metrics})
+                 "dagger": dagger_rounds, "samples": int(x.shape[0]),
+                 "direct": args.direct, "metrics": metrics})
 
     passed = closed["improvement"] >= GATE and nom["improvement"] >= GATE
 

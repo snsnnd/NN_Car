@@ -37,7 +37,10 @@ typedef struct {
     float rms;          /* whole-trace rms after the 50 ms start-up skip */
 } trace_t;
 
-static const char *const k_mode_name[] = {"PI", "PI+FF", "PI+residual"};
+#define MODE_COUNT 4
+
+static const char *const k_mode_name[MODE_COUNT] = {"PI", "PI+FF", "PI+residual",
+                                                    "NN direct"};
 
 /* Two-step schedule: standstill -> 0.8 -> 0.4 m/s. */
 static const stage_t k_nominal[] = {
@@ -225,7 +228,7 @@ static void print_scenario(const char *label, bool sag,
            "mode", "rms_err", "overshoot", "rise_s", "settle_s", "ss_err", "sat%",
            "rms@50ms");
 
-    for (int mode = 0; mode < 3; ++mode) {
+    for (int mode = 0; mode < MODE_COUNT; ++mode) {
         float rms = 0.0f;
         float overshoot = 0.0f;
         float rise = 0.0f;
@@ -255,7 +258,7 @@ static void print_scenario(const char *label, bool sag,
                (double)tr[mode].rms);
     }
 
-    for (int mode = 0; mode < 3; ++mode) {
+    for (int mode = 0; mode < MODE_COUNT; ++mode) {
         printf("  %-12s energy=%.4f  max|u_nn|=%.4f\n", k_mode_name[mode],
                (double)tr[mode].energy, (double)tr[mode].unn_abs_max);
     }
@@ -276,10 +279,11 @@ int main(int argc, char **argv)
 
     const nncar_profile_t *p = nncar_profile_default();
     const nncar_motor_nn_t *trained = nncar_motor_nn_trained();
+    const nncar_motor_nn_t *direct = nncar_motor_nn_direct_trained();
     const float duration = 3.00f;
     const int nstage = (int)(sizeof(k_nominal) / sizeof(k_nominal[0]));
 
-    static trace_t tr[2][3];
+    static trace_t tr[2][MODE_COUNT];
     static trace_t tr_zero;
     const bool sag_list[2] = {false, true};
 
@@ -287,9 +291,13 @@ int main(int argc, char **argv)
     nncar_motor_nn_zero(&zero_nn);
 
     for (int s = 0; s < 2; ++s) {
-        for (int mode = 0; mode < 3; ++mode) {
-            const nncar_motor_nn_t *nn =
-                (mode == NNCAR_MOTOR_MODE_PI_RESIDUAL) ? trained : NULL;
+        for (int mode = 0; mode < MODE_COUNT; ++mode) {
+            const nncar_motor_nn_t *nn = NULL;
+            if (mode == NNCAR_MOTOR_MODE_PI_RESIDUAL) {
+                nn = trained;
+            } else if (mode == NNCAR_MOTOR_MODE_NN_DIRECT) {
+                nn = direct;
+            }
             run_mode(p, (nncar_motor_mode_t)mode, nn, k_nominal, nstage,
                      duration, sag_list[s], &tr[s][mode]);
         }
@@ -302,9 +310,15 @@ int main(int argc, char **argv)
 
     const float rms_ff = tr[0][1].rms;
     const float rms_nn = tr[0][2].rms;
+    const float rms_direct = tr[0][3].rms;
     printf("\nresidual vs PI+FF (nominal, rms@50ms): %.5f -> %.5f (%+.1f%%)\n",
            (double)rms_ff, (double)rms_nn,
            (double)(100.0f * (1.0f - rms_nn / rms_ff)));
+    printf("direct   vs PI+FF (nominal, rms@50ms): %.5f -> %.5f (%+.1f%%)\n",
+           (double)rms_ff, (double)rms_direct,
+           (double)(100.0f * (1.0f - rms_direct / rms_ff)));
+    printf("direct   vs residual (nominal):        %+.1f%%\n",
+           (double)(100.0f * (1.0f - rms_direct / rms_nn)));
 
     if (!check) {
         return 0;
@@ -323,7 +337,9 @@ int main(int argc, char **argv)
         }
     }
 
-    /* Invariant 2: every baseline settles inside 2% of the last target. */
+    /* Invariant 2: every baseline settles inside 2% of the last target.
+     * The direct policy is exempt: it has no integrator, so a steady-state
+     * offset is the expected outcome of the experiment, not a defect. */
     for (int mode = 0; mode < 3; ++mode) {
         stage_metrics_t m = measure(&tr[0][mode], k_nominal, nstage - 1);
         if (fabsf(m.final_err) > 0.02f * 0.4f) {
@@ -359,6 +375,15 @@ int main(int argc, char **argv)
     if (!(rms_nn <= 0.90f * rms_ff)) {
         printf("FAIL: residual rms %.5f is not 10%% below PI+FF %.5f\n",
                (double)rms_nn, (double)rms_ff);
+        failures += 1;
+    }
+
+    /* Invariant 6: the standalone policy must at least not be worse than the
+     * baseline it replaces. A negative number means the export or the input
+     * contract is wrong, not that the idea lost. */
+    if (rms_direct > rms_ff) {
+        printf("FAIL: direct rms %.5f is worse than PI+FF %.5f\n",
+               (double)rms_direct, (double)rms_ff);
         failures += 1;
     }
 
