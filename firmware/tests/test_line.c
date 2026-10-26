@@ -37,6 +37,17 @@ static void test_mlp_contract(const nncar_profile_t *p, float v_max_eff,
     CHECK_NEAR(x[65], 0.75f / p->speed_ref_mps, 1.0e-6f);
     CHECK_NEAR(x[66], est->confidence, 1.0e-9f);
     CHECK_NEAR(x[67], est->valid_count_norm, 1.0e-9f);
+    /* The shared temporal filter feeds the PID: first tick has no derivative. */
+    nncar_line_state_t hist;
+    nncar_line_reset(&hist);
+    nncar_line_estimate_t moving = *est;
+    nncar_line_history_update(p, &hist, &moving, p->line_dt_s);
+    CHECK_NEAR(hist.d_filtered, 0.0f, 1.0e-9f);
+    CHECK_NEAR(hist.history_centroid_m, moving.centroid_m, 1.0e-9f);
+    moving.centroid_m = 0.02f;
+    nncar_line_history_update(p, &hist, &moving, p->line_dt_s);
+    CHECK(hist.d_filtered > 0.0f);
+    CHECK_NEAR(hist.history_centroid_m, est->centroid_m, 1.0e-9f);
 
     /* Null network or PID mode must fall back to the deterministic PID. */
     nncar_line_state_t pid;

@@ -53,6 +53,7 @@ typedef struct {
     float last_centroid_m;
     bool has_last_centroid;
     float prev_centroid_m;
+    float history_centroid_m;   /* previous tick's centroid, as fed to the net */
     float prev_t_s;
     float d_filtered;
     bool has_prev;
@@ -98,6 +99,15 @@ void nncar_line_nn_zero(nncar_line_nn_t *nn);
 /* y[0] = sigmoid(s_v) in [0, 1], y[1] = tanh(kappa_norm) in [-1, 1]. */
 void nncar_line_nn_eval(const nncar_line_nn_t *nn,
                         const float x[NNCAR_LINE_INPUT_DIM], float y[2]);
+
+/*
+ * Advance the shared temporal filter: d_filtered = LPF((e_k - e_{k-1})/dt) and
+ * history_centroid_m = e_{k-1}. Called once per line tick, in tracking mode.
+ */
+void nncar_line_history_update(const nncar_profile_t *p,
+                               nncar_line_state_t *st,
+                               const nncar_line_estimate_t *est,
+                               float dt_s);
 
 /* Frozen 68-D input contract (R3 section 4.1). */
 void nncar_line_nn_input(const nncar_profile_t *p,
