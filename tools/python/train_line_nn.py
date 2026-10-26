@@ -81,15 +81,49 @@ def forward(net: dict[str, np.ndarray], x: np.ndarray) -> np.ndarray:
     return np.stack((1.0 / (1.0 + np.exp(-z4[:, 0])), np.tanh(z4[:, 1])), axis=1)
 
 
+def fake_quant(t: np.ndarray) -> np.ndarray:
+    """Symmetric int8 round-trip with a straight-through gradient.
+
+    Returns the value the int8 runtime would produce; the backward pass treats
+    it as identity, which is the standard STE approximation.
+    """
+    scale = float(np.max(np.abs(t))) / 127.0
+    if scale <= 0.0:
+        return t
+    return np.round(t / scale) * scale
+
+
+def forward_q(net: dict[str, np.ndarray], x: np.ndarray) -> np.ndarray:
+    """Evaluate exactly what the int8 runtime would produce."""
+    h = fake_quant(x)
+    for i in range(1, 4):
+        h = np.maximum(h @ fake_quant(net[f"w{i}"]) + net[f"b{i}"], 0.0)
+        h = fake_quant(h)
+    z = h @ fake_quant(net["w4"]) + net["b4"]
+    return np.stack((1.0 / (1.0 + np.exp(-z[:, 0])), np.tanh(z[:, 1])), axis=1)
+
+
 def batch_gradients(net: dict[str, np.ndarray], x: np.ndarray,
-                    y: np.ndarray) -> tuple[float, dict[str, np.ndarray]]:
-    z1 = x @ net["w1"] + net["b1"]
+                    y: np.ndarray, qat: bool = False) -> tuple[float, dict[str, np.ndarray]]:
+    if qat:
+        w1 = fake_quant(net["w1"])
+        w2 = fake_quant(net["w2"])
+        w3 = fake_quant(net["w3"])
+        w4 = fake_quant(net["w4"])
+        qx = fake_quant(x)
+    else:
+        w1, w2, w3, w4, qx = net["w1"], net["w2"], net["w3"], net["w4"], x
+
+    z1 = qx @ w1 + net["b1"]
     h1 = np.maximum(z1, 0.0)
-    z2 = h1 @ net["w2"] + net["b2"]
+    h1 = fake_quant(h1) if qat else h1
+    z2 = h1 @ w2 + net["b2"]
     h2 = np.maximum(z2, 0.0)
-    z3 = h2 @ net["w3"] + net["b3"]
+    h2 = fake_quant(h2) if qat else h2
+    z3 = h2 @ w3 + net["b3"]
     h3 = np.maximum(z3, 0.0)
-    z4 = h3 @ net["w4"] + net["b4"]
+    h3 = fake_quant(h3) if qat else h3
+    z4 = h3 @ w4 + net["b4"]
 
     out = np.stack((1.0 / (1.0 + np.exp(-z4[:, 0])), np.tanh(z4[:, 1])), axis=1)
     diff = out - y
@@ -104,17 +138,17 @@ def batch_gradients(net: dict[str, np.ndarray], x: np.ndarray,
     g = {}
     g["w4"] = h3.T @ dz4
     g["b4"] = dz4.sum(axis=0)
-    dh3 = dz4 @ net["w4"].T
+    dh3 = dz4 @ w4.T
     dz3 = dh3 * (z3 > 0.0)
     g["w3"] = h2.T @ dz3
     g["b3"] = dz3.sum(axis=0)
-    dh2 = dz3 @ net["w3"].T
+    dh2 = dz3 @ w3.T
     dz2 = dh2 * (z2 > 0.0)
     g["w2"] = h1.T @ dz2
     g["b2"] = dz2.sum(axis=0)
-    dh1 = dz2 @ net["w2"].T
+    dh1 = dz2 @ w2.T
     dz1 = dh1 * (z1 > 0.0)
-    g["w1"] = x.T @ dz1
+    g["w1"] = qx.T @ dz1
     g["b1"] = dz1.sum(axis=0)
 
     return loss, g
@@ -122,7 +156,8 @@ def batch_gradients(net: dict[str, np.ndarray], x: np.ndarray,
 
 def train(net: dict[str, np.ndarray], x: np.ndarray, y: np.ndarray,
           x_val: np.ndarray, y_val: np.ndarray, epochs: int, seed: int,
-          lr: float = 1.0e-3, batch: int = 2048) -> dict[str, np.ndarray]:
+          lr: float = 1.0e-3, batch: int = 2048,
+          qat: bool = False) -> dict[str, np.ndarray]:
     rng = np.random.default_rng(seed + 1)
     params = list(net)
     m = {k: np.zeros_like(net[k]) for k in params}
@@ -137,7 +172,7 @@ def train(net: dict[str, np.ndarray], x: np.ndarray, y: np.ndarray,
         order = rng.permutation(n)
         for start in range(0, n, batch):
             idx = order[start:start + batch]
-            _, g = batch_gradients(net, x[idx], y[idx])
+            _, g = batch_gradients(net, x[idx], y[idx], qat)
 
             step += 1
             for k in params:
@@ -147,7 +182,10 @@ def train(net: dict[str, np.ndarray], x: np.ndarray, y: np.ndarray,
                 v_hat = v[k] / (1.0 - beta2 ** step)
                 net[k] = (net[k] - lr * m_hat / (np.sqrt(v_hat) + eps)).astype(np.float32)
 
-        val = float(np.mean((forward(net, x_val) - y_val) ** 2))
+        # Select the checkpoint on the quantized objective, otherwise the best
+        # epoch can be one whose accuracy does not survive int8.
+        pred = forward_q(net, x_val) if qat else forward(net, x_val)
+        val = float(np.mean((pred - y_val) ** 2))
         if val < best_loss:
             best_loss = val
             best = {k: net[k].copy() for k in params}
@@ -187,6 +225,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--out-json", default="configs/line_nn_weights.json")
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--qat", action="store_true",
+                        help="quantization-aware training (int8 fake-quant)")
     parser.add_argument("--residual", action="store_true",
                         help="learn kappa_teacher - kappa_pid instead of kappa")
     parser.add_argument("--quiet", action="store_true")
@@ -223,9 +263,9 @@ def main(argv: list[str]) -> int:
     y_val = y_all[~train_mask]
 
     net = init_net(np.random.default_rng(args.seed))
-    net = train(net, x, y, x_val, y_val, args.epochs, args.seed)
+    net = train(net, x, y, x_val, y_val, args.epochs, args.seed, qat=args.qat)
 
-    pred = forward(net, x_val)
+    pred = forward_q(net, x_val) if args.qat else forward(net, x_val)
     mse = float(np.mean((pred - y_val) ** 2))
     var = np.var(y_val, axis=0)
     r2 = 1.0 - np.mean((pred - y_val) ** 2, axis=0) / np.maximum(var, 1e-9)
@@ -246,7 +286,7 @@ def main(argv: list[str]) -> int:
 
     export_json(Path(args.out_json), net,
                 {"seed": args.seed, "epochs": args.epochs,
-                 "samples": int(x.shape[0]), "residual": args.residual,
+                 "samples": int(x.shape[0]), "residual": args.residual, "qat": args.qat,
                  "metrics": metrics})
 
     if not args.quiet:
