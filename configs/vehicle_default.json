@@ -1,0 +1,90 @@
+{
+  "profile_version": "1.0.0",
+  "name": "mg513x_12v_4s_default",
+  "verified": false,
+  "geometry": {
+    "track_width_m": 0.15,
+    "wheel_radius_m": 0.0325,
+    "sensor_count": 8,
+    "sensor_position_m": [0.0525, 0.0375, 0.0225, 0.0075, -0.0075, -0.0225, -0.0375, -0.0525],
+    "sensor_to_axle_m": 0.09,
+    "position_ref_m": 0.06,
+    "axle_ref_m": 0.12
+  },
+  "speed": {
+    "v_max_nom_mps": 1.5,
+    "speed_ref_mps": 1.5,
+    "v_min_kappa_mps": 0.15
+  },
+  "line": {
+    "kappa_ref": 6.0,
+    "a_lat_max_mps2": 3.5,
+    "curve_slow_factor": 0.5,
+    "omega_ref_radps": 3.0
+  },
+  "confidence": {
+    "enter_low": 0.25,
+    "exit_high": 0.6,
+    "nn_min": 0.35,
+    "valid_min": 2,
+    "enter_hold_s": 0.03,
+    "exit_hold_s": 0.05
+  },
+  "pid": {
+    "kp": 80.0,
+    "kd": 12.0,
+    "d_filter_hz": 20.0
+  },
+  "recovery": {
+    "search_speed_mps": 0.3,
+    "kappa_scale": 0.4,
+    "timeout_s": 0.5,
+    "ramp_s": 0.2
+  },
+  "motor": {
+    "kff": 0.92,
+    "kp": 1.0,
+    "ki": 4.0,
+    "tt_s": 0.05,
+    "i_limit": 0.6,
+    "deadband": 0.07,
+    "alpha": 0.25
+  },
+  "rail": {
+    "nominal_v": 12.0,
+    "min_v": 10.5,
+    "max_v": 12.3,
+    "derate_v": 11.0,
+    "stop_v": 10.0,
+    "ovp_v": 13.0,
+    "scale_min": 0.75,
+    "scale_max": 1.05
+  },
+  "encoder": {
+    "ppr": 13,
+    "gear_ratio": 30.0,
+    "quadrature": 4,
+    "timeout_s": 0.02
+  },
+  "safety": {
+    "overspeed_factor": 1.2,
+    "hard_overspeed_factor": 1.5,
+    "hard_overspeed_hold_s": 0.02,
+    "ramp_down_s": 0.2,
+    "cmd_ttl_s": 0.01,
+    "twist_ttl_s": 0.03,
+    "rail_ttl_s": 0.01,
+    "temp_warn_c": 80.0,
+    "temp_stop_c": 95.0,
+    "encoder_min_pwm": 0.2,
+    "encoder_no_edge_s": 0.1,
+    "line_lost_timeout_s": 0.5,
+    "curvature_fault_s": 0.02,
+    "derate_rail_low": 0.8,
+    "derate_temp_warn": 0.5
+  },
+  "timing": {
+    "motor_dt_s": 0.002,
+    "line_dt_s": 0.01
+  }
+}

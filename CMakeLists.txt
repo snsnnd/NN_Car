@@ -1,0 +1,72 @@
+cmake_minimum_required(VERSION 3.16)
+project(nncar LANGUAGES C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo)
+endif()
+
+set(NNCAR_WARN -Wall -Wextra -Wpedantic -Werror)
+set(NNCAR_FP -ffp-contract=off -fno-fast-math)
+
+set(GEN_DIR ${CMAKE_BINARY_DIR}/generated)
+set(PROFILE_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/vehicle_default.json)
+file(MAKE_DIRECTORY ${GEN_DIR})
+
+add_custom_command(
+  OUTPUT ${GEN_DIR}/nncar_profile_generated.c
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/gen_profile.py
+          ${PROFILE_JSON} ${GEN_DIR}/nncar_profile_generated.c
+  DEPENDS ${PROFILE_JSON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/gen_profile.py
+  COMMENT "Generating nncar profile from ${PROFILE_JSON}"
+  VERBATIM)
+
+add_library(nncar_core STATIC
+  firmware/core/src/gray.c
+  firmware/core/src/line.c
+  firmware/core/src/mixer.c
+  firmware/core/src/motor.c
+  firmware/core/src/safety.c
+  firmware/core/src/sim.c
+  firmware/core/src/stack.c
+  firmware/core/src/velocity.c
+  ${GEN_DIR}/nncar_profile_generated.c)
+
+target_include_directories(nncar_core PUBLIC firmware/core/include)
+target_compile_options(nncar_core PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
+target_link_libraries(nncar_core PUBLIC m)
+
+add_library(nncar_host STATIC
+  firmware/host/src/log_csv.c
+  firmware/host/src/sim_runner.c)
+
+target_include_directories(nncar_host PUBLIC firmware/host/include)
+target_compile_options(nncar_host PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
+target_link_libraries(nncar_host PUBLIC nncar_core)
+
+add_executable(nncar_sim firmware/host/src/sim_main.c)
+target_compile_options(nncar_sim PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
+target_link_libraries(nncar_sim PRIVATE nncar_host)
+
+add_executable(nncar_replay firmware/host/src/replay_main.c)
+target_compile_options(nncar_replay PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
+target_link_libraries(nncar_replay PRIVATE nncar_core)
+
+enable_testing()
+
+foreach(t gray line mixer motor safety sim)
+  add_executable(test_${t} firmware/tests/test_${t}.c)
+  target_include_directories(test_${t} PRIVATE firmware/tests)
+  target_compile_options(test_${t} PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
+  target_link_libraries(test_${t} PRIVATE nncar_host)
+  add_test(NAME ${t} COMMAND test_${t})
+endforeach()
+
+add_test(NAME python_tools
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/selftest.py)
+
+add_test(NAME replay_golden
+         COMMAND nncar_replay ${CMAKE_CURRENT_SOURCE_DIR}/golden/run_straight.csv)

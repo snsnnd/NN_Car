@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/snsnnd/NN_Car/schema/run_log.schema.json",
+  "title": "NN_Car run manifest",
+  "description": "Manifest written next to every CSV run log. The CSV contract lives in x-csv so a single file describes both artifacts.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generator",
+    "profile",
+    "profile_version",
+    "seed",
+    "tick_dt_s",
+    "line_dt_s",
+    "scenario"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "generator": { "type": "string", "minLength": 1 },
+    "profile": { "type": "string", "minLength": 1 },
+    "profile_version": { "type": "string", "minLength": 1 },
+    "profile_verified": { "type": "boolean" },
+    "seed": { "type": "integer", "minimum": 0 },
+    "git_commit": { "type": "string" },
+    "tick_dt_s": { "type": "number", "exclusiveMinimum": 0 },
+    "line_dt_s": { "type": "number", "exclusiveMinimum": 0 },
+    "scenario": {
+      "type": "object",
+      "required": ["duration_s", "v_desired_mps", "rail_v"],
+      "properties": {
+        "duration_s": { "type": "number", "exclusiveMinimum": 0 },
+        "v_desired_mps": { "type": "number", "minimum": 0 },
+        "offset_m": { "type": "number" },
+        "heading_deg": { "type": "number" },
+        "amp_m": { "type": "number" },
+        "wavelength_m": { "type": "number", "exclusiveMinimum": 0 },
+        "rail_v": { "type": "number", "minimum": 0 }
+      }
+    }
+  },
+  "x-csv": {
+    "delimiter": ",",
+    "required_columns": [
+      "t_us", "mode", "line_conf", "line_centroid_m", "line_found", "valid_count",
+      "v_target", "omega_target", "v_max_eff", "lambda", "kappa_target",
+      "wheel_v_l_target", "wheel_v_r_target", "wheel_v_l", "wheel_v_r",
+      "u_l", "u_r", "pwm_l", "pwm_r", "v_rail", "v_rail_valid",
+      "safety_faults", "safety_latched", "safety_derate", "safety_ramp",
+      "safety_stop", "x", "y", "theta", "recovery_ms"
+    ],
+    "integer_columns": [
+      "t_us", "mode", "line_found", "valid_count", "v_rail_valid",
+      "safety_faults", "safety_latched", "safety_stop"
+    ],
+    "flags": {
+      "mode": [0, 1],
+      "line_found": [0, 1],
+      "v_rail_valid": [0, 1],
+      "safety_latched": [0, 1],
+      "safety_stop": [0, 1]
+    },
+    "ranges": {
+      "line_conf": [0.0, 1.0],
+      "lambda": [0.0, 1.0],
+      "safety_derate": [0.0, 1.0],
+      "safety_ramp": [0.0, 1.0],
+      "u_l": [-1.0, 1.0],
+      "u_r": [-1.0, 1.0],
+      "pwm_l": [-1.0, 1.0],
+      "pwm_r": [-1.0, 1.0],
+      "v_max_eff": [0.0, 3.0],
+      "v_target": [0.0, 3.0],
+      "omega_target": [-20.0, 20.0],
+      "wheel_v_l_target": [-3.0, 3.0],
+      "wheel_v_r_target": [-3.0, 3.0],
+      "wheel_v_l": [-3.0, 3.0],
+      "wheel_v_r": [-3.0, 3.0],
+      "v_rail": [0.0, 20.0],
+      "kappa_target": [-20.0, 20.0],
+      "line_centroid_m": [-0.2, 0.2],
+      "recovery_ms": [0.0, 10000.0]
+    },
+    "monotonic": {
+      "t_us": "strictly_increasing"
+    }
+  }
+}
