@@ -165,13 +165,28 @@ int main(int argc, char **argv)
             continue;
         }
 
-        float u_l = nncar_pi_step(p, &motor_l, mix.wheels.left, prev_left, dt,
-                                  v_max_eff, true);
-        float u_r = nncar_pi_step(p, &motor_r, mix.wheels.right, prev_right, dt,
-                                  v_max_eff, true);
+        nncar_motor_cfg_t cfg;
+        cfg.mode = NNCAR_MOTOR_MODE_PI_FF;
+        cfg.nn = NULL;
 
-        max_u_err = fmaxf(max_u_err, fabsf(u_l - (float)values[col.u_l]));
-        max_u_err = fmaxf(max_u_err, fabsf(u_r - (float)values[col.u_r]));
+        nncar_motor_input_t min;
+        memset(&min, 0, sizeof(min));
+        min.v_max_eff = v_max_eff;
+        min.rail_ratio = 1.0f;
+        min.rail_exist = true;
+        min.rail_valid = true;
+        min.enable = true;
+
+        min.target_mps = mix.wheels.left;
+        min.actual_mps = prev_left;
+        nncar_motor_out_t ml = nncar_motor_step(p, &motor_l, &cfg, &min, dt);
+
+        min.target_mps = mix.wheels.right;
+        min.actual_mps = prev_right;
+        nncar_motor_out_t mr = nncar_motor_step(p, &motor_r, &cfg, &min, dt);
+
+        max_u_err = fmaxf(max_u_err, fabsf(ml.u_cmd - (float)values[col.u_l]));
+        max_u_err = fmaxf(max_u_err, fabsf(mr.u_cmd - (float)values[col.u_r]));
 
         prev_left = (float)values[col.wheel_v_l];
         prev_right = (float)values[col.wheel_v_r];

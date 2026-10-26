@@ -59,6 +59,10 @@ add_executable(nncar_bench firmware/host/src/bench_main.c)
 target_compile_options(nncar_bench PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
 target_link_libraries(nncar_bench PRIVATE nncar_core)
 
+add_executable(nncar_baseline firmware/host/src/baseline_main.c)
+target_compile_options(nncar_baseline PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
+target_link_libraries(nncar_baseline PRIVATE nncar_core)
+
 enable_testing()
 
 foreach(t gray line mixer motor safety sim)
@@ -74,6 +78,8 @@ add_test(NAME python_tools
 
 add_test(NAME replay_golden
          COMMAND nncar_replay ${CMAKE_CURRENT_SOURCE_DIR}/golden/run_straight.csv)
+
+add_test(NAME baseline_modes COMMAND nncar_baseline --check)
 
 set(BENCH_CSV ${CMAKE_BINARY_DIR}/bench.csv)
 set(BENCH_TRUTH ${CMAKE_BINARY_DIR}/bench_truth.json)

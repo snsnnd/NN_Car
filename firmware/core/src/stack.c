@@ -9,7 +9,18 @@ void nncar_stack_init(nncar_stack_t *st, const nncar_profile_t *p)
     nncar_motor_reset(&st->motor_l);
     nncar_motor_reset(&st->motor_r);
     nncar_safety_reset(&st->safety);
+    st->motor_cfg.mode = NNCAR_MOTOR_MODE_PI_FF;
+    st->motor_cfg.nn = NULL;
     st->line_accum_s = p->line_dt_s;
+}
+
+void nncar_stack_set_motor_mode(nncar_stack_t *st, nncar_motor_mode_t mode,
+                                const nncar_motor_nn_t *nn)
+{
+    st->motor_cfg.mode = mode;
+    st->motor_cfg.nn = nn;
+    nncar_motor_reset(&st->motor_l);
+    nncar_motor_reset(&st->motor_r);
 }
 
 nncar_stack_output_t nncar_stack_step(nncar_stack_t *st,
@@ -90,13 +101,29 @@ nncar_stack_output_t nncar_stack_step(nncar_stack_t *st,
 
     bool enable = sin.actual_left.valid && sin.actual_right.valid && !out.safety.force_zero_pwm;
 
-    out.u_left = nncar_pi_step(p, &st->motor_l, out.safety.wheel_out.left,
-                               in->actual_left_mps, dt_s, v_max_eff, enable);
-    out.u_right = nncar_pi_step(p, &st->motor_r, out.safety.wheel_out.right,
-                                in->actual_right_mps, dt_s, v_max_eff, enable);
+    const float rail_ratio =
+        in->v_rail_valid ? in->v_rail / p->rail_nominal_v : 1.0f;
 
-    out.pwm.left = out.safety.force_zero_pwm ? 0.0f : nncar_deadband_compensate(p, out.u_left);
-    out.pwm.right = out.safety.force_zero_pwm ? 0.0f : nncar_deadband_compensate(p, out.u_right);
+    nncar_motor_input_t min;
+    memset(&min, 0, sizeof(min));
+    min.v_max_eff = v_max_eff;
+    min.rail_ratio = rail_ratio;
+    min.rail_exist = in->v_rail_exist;
+    min.rail_valid = in->v_rail_valid;
+    min.enable = enable;
+
+    min.target_mps = out.safety.wheel_out.left;
+    min.actual_mps = in->actual_left_mps;
+    nncar_motor_out_t ml = nncar_motor_step(p, &st->motor_l, &st->motor_cfg, &min, dt_s);
+
+    min.target_mps = out.safety.wheel_out.right;
+    min.actual_mps = in->actual_right_mps;
+    nncar_motor_out_t mr = nncar_motor_step(p, &st->motor_r, &st->motor_cfg, &min, dt_s);
+
+    out.u_left = ml.u_cmd;
+    out.u_right = mr.u_cmd;
+    out.pwm.left = ml.pwm;
+    out.pwm.right = mr.pwm;
 
     out.twist = st->twist;
     out.line = st->estimate;

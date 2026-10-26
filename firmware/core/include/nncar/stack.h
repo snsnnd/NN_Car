@@ -48,6 +48,7 @@ typedef struct {
     nncar_line_state_t line;
     nncar_motor_state_t motor_l;
     nncar_motor_state_t motor_r;
+    nncar_motor_cfg_t motor_cfg;
     nncar_safety_state_t safety;
     nncar_line_estimate_t estimate;
     nncar_mix_result_t mix;
@@ -58,6 +59,10 @@ typedef struct {
 } nncar_stack_t;
 
 void nncar_stack_init(nncar_stack_t *st, const nncar_profile_t *p);
+
+/* Select one of the three baselines; nn may be NULL for PI_RESIDUAL. */
+void nncar_stack_set_motor_mode(nncar_stack_t *st, nncar_motor_mode_t mode,
+                                const nncar_motor_nn_t *nn);
 
 nncar_stack_output_t nncar_stack_step(nncar_stack_t *st,
                                       const nncar_profile_t *p,
