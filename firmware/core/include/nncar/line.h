@@ -12,7 +12,14 @@ typedef enum {
 /* Which LineFollower runs in tracking mode; recovery is shared. */
 typedef enum {
     NNCAR_LINE_CTRL_PID = 0,
-    NNCAR_LINE_CTRL_MLP = 1
+    NNCAR_LINE_CTRL_MLP = 1,
+    /*
+     * Residual form: kappa = kappa_pid + line_kappa_alpha * net, where the base
+     * is the PID evaluated at the same state. Speed still comes from the net's
+     * s_v head so the only difference from CTRL_MLP is where the curvature
+     * baseline comes from. A NULL network falls back to the PID.
+     */
+    NNCAR_LINE_CTRL_MLP_RESIDUAL = 2
 } nncar_line_ctrl_t;
 
 #define NNCAR_LINE_INPUT_DIM 68
@@ -118,5 +125,16 @@ void nncar_line_nn_input(const nncar_profile_t *p,
 
 /* Trained weights, generated from configs/line_nn_weights.json. */
 const nncar_line_nn_t *nncar_line_nn_trained(void);
+
+/* Residual-baseline weights, generated from configs/line_nn_residual.json. */
+const nncar_line_nn_t *nncar_line_nn_residual_trained(void);
+
+/*
+ * Curvature the PID would ask for at this exact state (post-envelope), i.e.
+ * omega / v. Used as the residual baseline and as the dump label anchor.
+ */
+float nncar_line_pid_kappa(const nncar_profile_t *p, const nncar_line_state_t *st,
+                          const nncar_line_estimate_t *est, float v_desired,
+                          float v_max_eff);
 
 #endif

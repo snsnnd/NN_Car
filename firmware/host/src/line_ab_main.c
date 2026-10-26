@@ -12,7 +12,8 @@
 typedef enum {
     SRC_PID = 0,
     SRC_MLP = 1,
-    SRC_ORACLE = 2
+    SRC_ORACLE = 2,
+    SRC_RESIDUAL = 3
 } src_t;
 
 typedef struct {
@@ -216,12 +217,12 @@ static void encoder_update(const nncar_profile_t *p, nncar_velocity_t *vel_l,
     *edges = (dl != 0) || (dr != 0);
 }
 
-/* One binary row: 68 float32 inputs followed by s_v and kappa_norm. */
-#define DUMP_ROW 70
+/* One binary row: 68 float32 inputs, s_v, kappa_norm, kappa_pid_norm. */
+#define DUMP_ROW 71
 
 static void dump_pair(FILE *dump, const nncar_profile_t *p,
                       const nncar_gray_frame_t *frame, const nncar_line_estimate_t *est,
-                      float v_desired, float v_cmd, float kappa)
+                      float v_desired, float v_cmd, float kappa, float kappa_pid)
 {
     float row[DUMP_ROW];
 
@@ -230,6 +231,7 @@ static void dump_pair(FILE *dump, const nncar_profile_t *p,
     float s_v = (v_desired > 1.0e-3f) ? v_cmd / v_desired : 0.0f;
     row[NNCAR_LINE_INPUT_DIM] = nncar_clampf(s_v, 0.0f, 1.0f);
     row[NNCAR_LINE_INPUT_DIM + 1] = nncar_clampf(kappa / p->kappa_ref, -1.0f, 1.0f);
+    row[NNCAR_LINE_INPUT_DIM + 2] = nncar_clampf(kappa_pid, -1.0f, 1.0f);
 
     if (fwrite(row, sizeof(row), 1, dump) != 1) {
         /* Write errors are surfaced by the caller through ferror(). */
@@ -254,9 +256,13 @@ static void run_stack(const nncar_profile_t *p, const scenario_t *sc, src_t src,
 
     nncar_stack_t stack;
     nncar_stack_init(&stack, p);
-    nncar_stack_set_line_ctrl(&stack, (src == SRC_MLP) ? NNCAR_LINE_CTRL_MLP
-                                                       : NNCAR_LINE_CTRL_PID,
-                              (src == SRC_MLP) ? nn : NULL);
+    nncar_line_ctrl_t ctrl = NNCAR_LINE_CTRL_PID;
+    if (src == SRC_MLP) {
+        ctrl = NNCAR_LINE_CTRL_MLP;
+    } else if (src == SRC_RESIDUAL) {
+        ctrl = NNCAR_LINE_CTRL_MLP_RESIDUAL;
+    }
+    nncar_stack_set_line_ctrl(&stack, ctrl, (src == SRC_PID) ? NULL : nn);
 
     nncar_velocity_t vel_l;
     nncar_velocity_t vel_r;
@@ -320,9 +326,13 @@ static void run_stack(const nncar_profile_t *p, const scenario_t *sc, src_t src,
             const nncar_gray_frame_t frame = {gray_value, gray_exist, gray_valid};
             nncar_twist_t label = {0.0f, 0.0f};
             float kappa = 0.0f;
-            oracle_cmd(p, &sim, sc->v_desired, nncar_v_max_eff(p, sim.v_rail), &label,
-                       &kappa);
-            dump_pair(dump, p, &frame, &out.line, sc->v_desired, label.v, kappa);
+            const float v_max_eff = nncar_v_max_eff(p, sim.v_rail);
+            oracle_cmd(p, &sim, sc->v_desired, v_max_eff, &label, &kappa);
+            /* The residual baseline is the PID evaluated at this same state. */
+            const float kappa_pid = nncar_line_pid_kappa(p, &stack.line, &out.line,
+                                                         sc->v_desired, v_max_eff);
+            dump_pair(dump, p, &frame, &out.line, sc->v_desired, label.v, kappa,
+                      kappa_pid);
         }
 
         now_us += dt_us;
@@ -354,6 +364,11 @@ static void run_oracle(const nncar_profile_t *p, const scenario_t *sc, uint32_t 
 
     nncar_line_estimate_t est;
     memset(&est, 0, sizeof(est));
+
+    /* Shadow state so the dumped rows carry the same PID baseline a residual
+     * student would see; it only tracks the shared derivative filter. */
+    nncar_line_state_t shadow;
+    nncar_line_reset(&shadow);
 
     nncar_velocity_t vel_l;
     nncar_velocity_t vel_r;
@@ -398,7 +413,11 @@ static void run_oracle(const nncar_profile_t *p, const scenario_t *sc, uint32_t 
 
             if (dump != NULL) {
                 const nncar_gray_frame_t frame = {gray_value, gray_exist, gray_valid};
-                dump_pair(dump, p, &frame, &est, sc->v_desired, twist.v, kappa);
+                nncar_line_history_update(p, &shadow, &est, p->line_dt_s);
+                const float kappa_pid = nncar_line_pid_kappa(p, &shadow, &est,
+                                                             sc->v_desired, v_max_eff);
+                dump_pair(dump, p, &frame, &est, sc->v_desired, twist.v, kappa,
+                          kappa_pid);
             }
         }
 
@@ -556,7 +575,7 @@ static void dump_teacher(const nncar_profile_t *p, const char *path, int episode
 static void print_header(void)
 {
     printf("\n%-12s %8s %8s %8s %8s %8s %8s %8s\n", "scenario", "pid_rms", "mlp_rms",
-           "orc_rms", "pid_max", "mlp_max", "pid_dw", "mlp_dw");
+           "res_rms", "orc_rms", "pid_max", "mlp_max", "pid_dw");
 }
 
 int main(int argc, char **argv)
@@ -606,9 +625,11 @@ int main(int argc, char **argv)
     }
 
     const nncar_line_nn_t *trained = nncar_line_nn_trained();
+    const nncar_line_nn_t *residual_nn = nncar_line_nn_residual_trained();
 
     metrics_t pid[SUITE_COUNT];
     metrics_t mlp[SUITE_COUNT];
+    metrics_t res[SUITE_COUNT];
     metrics_t orc[SUITE_COUNT];
 
     printf("line A/B (profile %s, line_dt %.3f s, %d scenarios)\n", nncar_profile_name(),
@@ -619,21 +640,23 @@ int main(int argc, char **argv)
         const uint32_t s = (uint32_t)(i + 1);
         run_one(p, &k_suite[i], SRC_PID, NULL, s, &pid[i], NULL);
         run_one(p, &k_suite[i], SRC_MLP, trained, s, &mlp[i], NULL);
+        run_one(p, &k_suite[i], SRC_RESIDUAL, residual_nn, s, &res[i], NULL);
         run_one(p, &k_suite[i], SRC_ORACLE, NULL, s, &orc[i], NULL);
 
         printf("%-12s %8.4f %8.4f %8.4f %8.4f %8.4f %8.4f %8.4f\n", k_suite[i].name,
                (double)metric_rms(&pid[i]), (double)metric_rms(&mlp[i]),
-               (double)metric_rms(&orc[i]), (double)pid[i].max_lat,
-               (double)mlp[i].max_lat, (double)metric_domega(&pid[i]),
-               (double)metric_domega(&mlp[i]));
+               (double)metric_rms(&res[i]), (double)metric_rms(&orc[i]),
+               (double)pid[i].max_lat, (double)mlp[i].max_lat,
+               (double)metric_domega(&pid[i]));
     }
 
     const float pid_agg = aggregate(pid);
     const float mlp_agg = aggregate(mlp);
+    const float res_agg = aggregate(res);
     const float orc_agg = aggregate(orc);
 
-    printf("%-12s %8.4f %8.4f %8.4f\n", "aggregate", (double)pid_agg, (double)mlp_agg,
-           (double)orc_agg);
+    printf("%-12s %8.4f %8.4f %8.4f %8.4f\n", "aggregate", (double)pid_agg,
+           (double)mlp_agg, (double)res_agg, (double)orc_agg);
 
     printf("\n%-12s %8s %8s %8s %8s %8s\n", "scenario", "out%_pid", "out%_mlp",
            "spd_pid", "spd_mlp", "recov_s");
@@ -655,9 +678,20 @@ int main(int argc, char **argv)
     printf("\nA/B: PID %.5f -> MLP %.5f (%+.1f%%), oracle %.5f\n", (double)pid_agg,
            (double)mlp_agg, (double)(100.0f * (1.0f - mlp_agg / pid_agg)),
            (double)orc_agg);
+    printf("     residual %.5f (%+.1f%% vs PID, %+.1f%% vs MLP)\n", (double)res_agg,
+           (double)(100.0f * (1.0f - res_agg / pid_agg)),
+           (double)(100.0f * (1.0f - res_agg / mlp_agg)));
 
     if (!(mlp_agg <= 0.90f * pid_agg)) {
         printf("FAIL: aggregate MLP rms is not 10%% below PID\n");
+        failures += 1;
+    }
+
+    /* The residual variant must at least not be worse than the PID it is
+     * anchored to; anything else means the export or the label is wrong. */
+    if (res_agg > pid_agg) {
+        printf("FAIL: residual %.5f is worse than PID %.5f\n", (double)res_agg,
+               (double)pid_agg);
         failures += 1;
     }
 

@@ -35,6 +35,12 @@ typedef struct {
      * pid_kp. It is NOT applied to the PID path.
      */
     float line_kappa_gain;
+    /*
+     * Scale of the residual curvature correction in NNCAR_LINE_CTRL_MLP_RESIDUAL:
+     * kappa = kappa_pid + line_kappa_alpha * tanh_net. 1.0 keeps the network's
+     * full authority, bounded only by the +/-1 clamp.
+     */
+    float line_kappa_alpha;
 
     /* confidence and handover */
     float conf_enter_low;

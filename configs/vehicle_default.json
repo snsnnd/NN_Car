@@ -6,7 +6,16 @@
     "track_width_m": 0.15,
     "wheel_radius_m": 0.0325,
     "sensor_count": 8,
-    "sensor_position_m": [0.0525, 0.0375, 0.0225, 0.0075, -0.0075, -0.0225, -0.0375, -0.0525],
+    "sensor_position_m": [
+      0.0525,
+      0.0375,
+      0.0225,
+      0.0075,
+      -0.0075,
+      -0.0225,
+      -0.0375,
+      -0.0525
+    ],
     "sensor_to_axle_m": 0.09,
     "position_ref_m": 0.06,
     "axle_ref_m": 0.12
@@ -21,7 +30,8 @@
     "a_lat_max_mps2": 3.5,
     "curve_slow_factor": 0.5,
     "omega_ref_radps": 3.0,
-    "kappa_gain": 1.8
+    "kappa_gain": 1.8,
+    "kappa_alpha": 0.5
   },
   "confidence": {
     "enter_low": 0.25,

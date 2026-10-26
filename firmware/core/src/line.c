@@ -188,7 +188,7 @@ static float curve_slow(const nncar_profile_t *p, float omega)
 
 /* Deterministic PID teacher on lateral centroid offset (+ = line on the left). */
 static nncar_twist_t pid_step(const nncar_profile_t *p,
-                              nncar_line_state_t *st,
+                              const nncar_line_state_t *st,
                               const nncar_line_estimate_t *est,
                               float v_desired,
                               float v_max_eff)
@@ -202,6 +202,54 @@ static nncar_twist_t pid_step(const nncar_profile_t *p,
     cmd.v = fminf(v_desired, v_max_eff) * slow;
     cmd.omega = omega;
     return nncar_twist_envelope(p, cmd, v_max_eff);
+}
+
+float nncar_line_pid_kappa(const nncar_profile_t *p, const nncar_line_state_t *st,
+                          const nncar_line_estimate_t *est, float v_desired,
+                          float v_max_eff)
+{
+    const nncar_twist_t base = pid_step(p, st, est, v_desired, v_max_eff);
+
+    if (base.v <= 1.0e-3f) {
+        return 0.0f;
+    }
+
+    return nncar_clampf(base.omega / base.v / p->kappa_ref, -1.0f, 1.0f);
+}
+
+static nncar_twist_t residual_step(const nncar_profile_t *p,
+                                   const nncar_gray_frame_t *frame,
+                                   const nncar_line_estimate_t *est,
+                                   nncar_line_state_t *st,
+                                   float v_desired,
+                                   float v_max_eff,
+                                   const nncar_line_nn_t *nn)
+{
+    float x[NNCAR_LINE_INPUT_DIM];
+    float y[2];
+
+    nncar_line_nn_input(p, frame, est, v_desired, x);
+    nncar_line_nn_eval(nn, x, y);
+
+    /* Baseline in curvature space, at the PID's own speed. */
+    const float kappa_pid = nncar_line_pid_kappa(p, st, est, v_desired, v_max_eff);
+    const float kappa = nncar_clampf(kappa_pid + p->line_kappa_alpha * y[1],
+                                     -1.0f, 1.0f);
+
+    /* Speed still comes from the net, so only the baseline differs from MLP. */
+    nncar_twist_t twist;
+    twist.v = nncar_clampf(y[0], 0.0f, 1.0f) * fmaxf(v_desired, 0.0f);
+
+    if (twist.v <= 1.0e-4f) {
+        twist.omega = 0.0f;
+        return twist;
+    }
+
+    float slow = curve_slow(p, kappa * p->kappa_ref * twist.v);
+    twist.v *= slow;
+    twist.omega = kappa * p->kappa_ref * twist.v;
+
+    return nncar_twist_envelope(p, twist, v_max_eff);
 }
 
 static nncar_twist_t mlp_step(const nncar_profile_t *p,
@@ -289,15 +337,20 @@ nncar_twist_t nncar_line_step(const nncar_profile_t *p,
 
     nncar_line_history_update(p, st, est, dt_s);
 
-    nncar_twist_t cmd;
-    bool use_mlp = (st->ctrl == NNCAR_LINE_CTRL_MLP) && (st->nn != NULL) &&
-                   (frame != NULL) && (frame->value != NULL);
+    nncar_twist_t cmd = {0.0f, 0.0f};
+    const bool net_ready = (st->nn != NULL) && (frame != NULL) &&
+                           (frame->value != NULL);
+    const bool use_direct = (st->ctrl == NNCAR_LINE_CTRL_MLP) && net_ready;
+    const bool use_residual = (st->ctrl == NNCAR_LINE_CTRL_MLP_RESIDUAL) && net_ready;
 
-    if (use_mlp) {
+    if (use_direct) {
         cmd = mlp_step(p, frame, est, v_desired, v_max_eff, st->nn);
+    } else if (use_residual) {
+        cmd = residual_step(p, frame, est, st, v_desired, v_max_eff, st->nn);
     }
 
-    if (!use_mlp || !nncar_finite(cmd.v) || !nncar_finite(cmd.omega)) {
+    if ((!use_direct && !use_residual) || !nncar_finite(cmd.v) ||
+        !nncar_finite(cmd.omega)) {
         /* Deterministic fallback; the derivative state is shared, so it is warm. */
         cmd = pid_step(p, st, est, v_desired, v_max_eff);
     }

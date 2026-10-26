@@ -38,11 +38,12 @@ import numpy as np
 INPUT_DIM = 68
 HIDDEN = (64, 32, 16)
 OUTPUTS = 2
-DUMP_ROW = INPUT_DIM + OUTPUTS
+LABELS = 3   # s_v, kappa_teacher, kappa_pid (the residual baseline)
+DUMP_ROW = INPUT_DIM + LABELS
 MAGIC = 0x4C4E4E31
 
 
-def load_dump(path: Path) -> tuple[np.ndarray, np.ndarray, int, int, int]:
+def load_dump(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int, int]:
     raw = np.fromfile(path, dtype=np.float32)
     if raw.size < 4:
         raise ValueError("dump is truncated")
@@ -58,8 +59,8 @@ def load_dump(path: Path) -> tuple[np.ndarray, np.ndarray, int, int, int]:
     if body.shape[0] != expected:
         raise ValueError(f"{body.shape[0]} rows, expected {expected}")
 
-    return (body[:, :INPUT_DIM], body[:, INPUT_DIM:], episodes, rows_per_run,
-            runs_per_ep)
+    return (body[:, :INPUT_DIM], body[:, INPUT_DIM:INPUT_DIM + OUTPUTS],
+            body[:, INPUT_DIM + OUTPUTS], episodes, rows_per_run, runs_per_ep)
 
 
 def init_net(rng: np.random.Generator) -> dict[str, np.ndarray]:
@@ -157,7 +158,7 @@ def train(net: dict[str, np.ndarray], x: np.ndarray, y: np.ndarray,
 def export_json(path: Path, net: dict[str, np.ndarray], meta: dict) -> None:
     doc = {
         "schema_version": "1.0.0",
-        "model": "line_mlp",
+        "model": "line_mlp_residual" if meta.get("residual") else "line_mlp",
         "input_dim": INPUT_DIM,
         "hidden": list(HIDDEN),
         "activation": "relu",
@@ -186,11 +187,14 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--out-json", default="configs/line_nn_weights.json")
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--residual", action="store_true",
+                        help="learn kappa_teacher - kappa_pid instead of kappa")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        x_all, y_all, episodes, rows_per_run, runs_per_ep = load_dump(Path(args.data))
+        (x_all, y_all, kappa_pid_all, episodes, rows_per_run,
+         runs_per_ep) = load_dump(Path(args.data))
     except (OSError, ValueError) as exc:
         print(f"train_line_nn: {exc}", file=sys.stderr)
         return 2
@@ -205,6 +209,13 @@ def main(argv: list[str]) -> int:
     train_mask = np.zeros(episodes * block, dtype=bool)
     for ep in train_eps:
         train_mask[ep * block:(ep + 1) * block] = True
+
+    if args.residual:
+        # The student only sees the state, never the PID command, so the label
+        # is the correction the PID is missing at that same state. Clipped away
+        # from the tanh tail like the motor teacher.
+        y_all = y_all.copy()
+        y_all[:, 1] = np.clip(y_all[:, 1] - kappa_pid_all, -0.96, 0.96)
 
     x = x_all[train_mask]
     y = y_all[train_mask]
@@ -235,7 +246,8 @@ def main(argv: list[str]) -> int:
 
     export_json(Path(args.out_json), net,
                 {"seed": args.seed, "epochs": args.epochs,
-                 "samples": int(x.shape[0]), "metrics": metrics})
+                 "samples": int(x.shape[0]), "residual": args.residual,
+                 "metrics": metrics})
 
     if not args.quiet:
         print(f"  wrote {args.out_json}")
