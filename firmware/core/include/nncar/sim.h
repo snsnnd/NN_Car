@@ -24,6 +24,13 @@ typedef struct {
     float wheel_radius_m;
     float track_width_m;
 
+    /*
+     * Optional Coulomb friction at the wheel. Zero (the default) reproduces the
+     * clean first-order plant bit for bit; a positive value adds a breakaway
+     * torque, which is what makes the identified deadband an *apparent* one.
+     */
+    float motor_stiction_nm;
+
     /* sensor model perturbations; zero/full defaults reproduce the clean sim */
     uint32_t rng;
     float gray_noise_std;

@@ -247,6 +247,41 @@ static void test_deadband(void)
     CHECK(!nncar_calib_deadband_result(&st, &value, &quality));
 }
 
+static void test_kff(void)
+{
+    /* Plant gain 0.8 of nominal: kff must come out as 1 / 0.8. */
+    nncar_calib_kff_t st;
+    nncar_calib_kff_begin(&st);
+
+    for (int i = 0; i < 3; ++i) {
+        const float u = 0.4f + 0.2f * (float)i;
+        nncar_calib_kff_push(&st, 0.8f * 1.5f * u, u, 1.5f);
+    }
+
+    float kff = 0.0f;
+    float quality = 0.0f;
+    CHECK(nncar_calib_kff_result(&st, &kff, &quality));
+    CHECK_NEAR(kff, 1.25f, 1.0e-5f);
+    CHECK(quality > 0.99f);
+
+    /* Non-finite points are ignored rather than poisoning the sums. */
+    nncar_calib_kff_push(&st, NAN, 0.5f, 1.5f);
+    nncar_calib_kff_push(&st, 0.5f, INFINITY, 1.5f);
+    CHECK(nncar_calib_kff_result(&st, &kff, &quality));
+    CHECK_NEAR(kff, 1.25f, 1.0e-5f);
+
+    /* A single point carries no slope. */
+    nncar_calib_kff_begin(&st);
+    nncar_calib_kff_push(&st, 0.5f, 0.5f, 1.5f);
+    CHECK(!nncar_calib_kff_result(&st, &kff, &quality));
+
+    /* No motion at all must be rejected. */
+    nncar_calib_kff_begin(&st);
+    nncar_calib_kff_push(&st, 0.0f, 0.4f, 1.5f);
+    nncar_calib_kff_push(&st, 0.0f, 0.6f, 1.5f);
+    CHECK(!nncar_calib_kff_result(&st, &kff, &quality));
+}
+
 int main(void)
 {
     test_record();
@@ -255,5 +290,6 @@ int main(void)
     test_apply();
     test_selftest();
     test_deadband();
+    test_kff();
     return 0;
 }

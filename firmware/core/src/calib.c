@@ -297,3 +297,52 @@ bool nncar_calib_deadband_result(const nncar_calib_deadband_t *st, float *out,
 
     return true;
 }
+
+void nncar_calib_kff_begin(nncar_calib_kff_t *st)
+{
+    memset(st, 0, sizeof(*st));
+}
+
+void nncar_calib_kff_push(nncar_calib_kff_t *st, float speed_mps,
+                          float u_compensated, float v_max_eff)
+{
+    if (!nncar_finite(speed_mps) || !nncar_finite(u_compensated) ||
+        !nncar_finite(v_max_eff)) {
+        return;
+    }
+
+    const float x = v_max_eff * u_compensated;
+    const float y = speed_mps;
+
+    st->sum_xx += x * x;
+    st->sum_xy += x * y;
+    st->sum_yy += y * y;
+    ++st->samples;
+}
+
+bool nncar_calib_kff_result(const nncar_calib_kff_t *st, float *out,
+                            float *quality)
+{
+    if (st->samples < 2u || st->sum_xx <= 1.0e-9f || st->sum_yy <= 1.0e-12f) {
+        return false;
+    }
+
+    const float slope = st->sum_xy / st->sum_xx;
+    if (slope <= 1.0e-3f) {
+        return false;
+    }
+
+    /* Residual of the through-origin fit, as an R^2 on the speed. */
+    const float sse = st->sum_yy - 2.0f * slope * st->sum_xy +
+                      slope * slope * st->sum_xx;
+    const float q = nncar_clampf(1.0f - sse / st->sum_yy, 0.0f, 1.0f);
+
+    if (out != NULL) {
+        *out = 1.0f / slope;
+    }
+    if (quality != NULL) {
+        *quality = q;
+    }
+
+    return true;
+}

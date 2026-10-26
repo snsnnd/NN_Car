@@ -147,4 +147,29 @@ void nncar_calib_deadband_push(nncar_calib_deadband_t *st, float pwm,
 bool nncar_calib_deadband_result(const nncar_calib_deadband_t *st, float *out,
                                  float *quality);
 
+/* ------------------------------------------------------------------ */
+/* Feedforward gain identification: streaming steady-state points.      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The controller's feedforward is u_ff = kff * v_target / v_max_eff, so the
+ * plant's own gain has to be divided out. Callers feed steady-state points as
+ * (measured speed, deadband-compensated command, v_max_eff); the fit is a least
+ * squares line through the origin and kff is its reciprocal slope.
+ */
+typedef struct {
+    float sum_xx;
+    float sum_xy;
+    float sum_yy;
+    uint32_t samples;
+} nncar_calib_kff_t;
+
+void nncar_calib_kff_begin(nncar_calib_kff_t *st);
+void nncar_calib_kff_push(nncar_calib_kff_t *st, float speed_mps,
+                          float u_compensated, float v_max_eff);
+
+/* False when the points carry no usable slope. */
+bool nncar_calib_kff_result(const nncar_calib_kff_t *st, float *out,
+                            float *quality);
+
 #endif

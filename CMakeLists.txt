@@ -91,6 +91,10 @@ add_executable(nncar_line_ab firmware/host/src/line_ab_main.c)
 target_compile_options(nncar_line_ab PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
 target_link_libraries(nncar_line_ab PRIVATE nncar_core)
 
+add_executable(nncar_calib_bench firmware/host/src/calib_bench_main.c)
+target_compile_options(nncar_calib_bench PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
+target_link_libraries(nncar_calib_bench PRIVATE nncar_core)
+
 enable_testing()
 
 foreach(t calib gray line mixer motor nn safety sim)
@@ -108,6 +112,9 @@ add_test(NAME replay_golden
          COMMAND nncar_replay ${CMAKE_CURRENT_SOURCE_DIR}/golden/run_straight.csv)
 
 add_test(NAME baseline_modes COMMAND nncar_baseline --check)
+
+# On-board identification validated against the simulated plant's ground truth.
+add_test(NAME calib_identify COMMAND nncar_calib_bench --check)
 
 # LineFollower A/B harness smoke test. The epsilon gate itself is a milestone
 # check (`nncar_line_ab --check`), not a regression test; see docs section 4.4.

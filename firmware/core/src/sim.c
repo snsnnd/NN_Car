@@ -111,6 +111,19 @@ static float wheel_speed_step(float w, float u, const nncar_sim_t *s,
 
     float u_eff = drive * s->v_rail / p->rail_nominal_v;
     float torque = s->torque_gain_nm * u_eff - s->damping_nms * w;
+
+    if (s->motor_stiction_nm > 0.0f) {
+        if (w == 0.0f) {
+            /* Breakaway: the wheel stays put until the drive beats stiction. */
+            if (fabsf(torque) <= s->motor_stiction_nm) {
+                return 0.0f;
+            }
+            torque -= (torque > 0.0f) ? s->motor_stiction_nm : -s->motor_stiction_nm;
+        } else {
+            torque -= (w > 0.0f) ? s->motor_stiction_nm : -s->motor_stiction_nm;
+        }
+    }
+
     return w + torque / s->inertia_kgm2 * dt_s;
 }
 
