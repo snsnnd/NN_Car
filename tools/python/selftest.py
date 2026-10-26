@@ -13,6 +13,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import gen_motor_nn  # noqa: E402
 import gen_profile  # noqa: E402
 import golden  # noqa: E402
 import identify_motor  # noqa: E402
@@ -20,6 +21,7 @@ import validate_log  # noqa: E402
 
 ROOT = HERE.parents[1]
 CONFIG = ROOT / "configs" / "vehicle_default.json"
+WEIGHTS = ROOT / "configs" / "motor_nn_weights.json"
 SCHEMA = ROOT / "tools" / "schema" / "run_log.schema.json"
 
 FAILURES: list[str] = []
@@ -250,10 +252,54 @@ def test_identification(tmp: Path) -> None:
           f"identify: rail model error {rail_error}")
 
 
+def test_motor_nn_generation(tmp: Path) -> None:
+    doc, weights = gen_motor_nn.load_weights(WEIGHTS)
+    text = gen_motor_nn.render(doc, weights, str(WEIGHTS))
+
+    params = sum(int(np) for np in (
+        weights["w1"].size, weights["b1"].size, weights["w2"].size,
+        weights["b2"].size, weights["w3"].size, weights["b3"].size,
+        weights["w4"].size, weights["b4"].size,
+    ))
+    check(params == 929, f"motor_nn: parameter count {params} != 929")
+    check("nncar_motor_nn_trained" in text, "motor_nn: accessor missing")
+
+    # The JSON matrix is [fan_in, fan_out]; the C struct is [fan_out][fan_in].
+    first_row = ", ".join(gen_motor_nn._cfloat(v)
+                          for v in weights["w1"].T[0])
+    check(f"{{ {first_row} }},", "motor_nn: w1 row was not transposed")
+
+    for name, mutate in (
+        ("input_dim", lambda d: d.update(input_dim=9)),
+        ("hidden", lambda d: d.update(hidden=[16, 16, 8])),
+        ("trained", lambda d: d.update(trained=False)),
+    ):
+        broken = json.loads(WEIGHTS.read_text(encoding="utf-8"))
+        mutate(broken)
+        path = tmp / f"broken_{name}.json"
+        path.write_text(json.dumps(broken), encoding="utf-8")
+        try:
+            gen_motor_nn.load_weights(path)
+            check(False, f"motor_nn: {name} was not rejected")
+        except (KeyError, ValueError):
+            pass
+
+    profile = json.loads(CONFIG.read_text(encoding="utf-8"))
+    profile["motor"]["alpha"] = 0.5
+    path = tmp / "alpha_mismatch.json"
+    path.write_text(json.dumps(profile), encoding="utf-8")
+    try:
+        gen_motor_nn.check_alpha(doc, path)
+        check(False, "motor_nn: alpha mismatch was not rejected")
+    except (KeyError, ValueError):
+        pass
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         test_profile_generation(tmp)
+        test_motor_nn_generation(tmp)
         test_validation(tmp)
         test_golden(tmp)
         test_identification(tmp)

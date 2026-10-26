@@ -34,6 +34,7 @@ typedef struct {
     float pwm[MAX_STEPS];
     float energy;
     float unn_abs_max;
+    float rms;          /* whole-trace rms after the 50 ms start-up skip */
 } trace_t;
 
 static const char *const k_mode_name[] = {"PI", "PI+FF", "PI+residual"};
@@ -83,6 +84,9 @@ static void run_mode(const nncar_profile_t *p, nncar_motor_mode_t mode,
     memset(tr, 0, sizeof(*tr));
     tr->n = (nsteps < MAX_STEPS) ? nsteps : MAX_STEPS;
 
+    float sum_sq = 0.0f;
+    int sum_count = 0;
+
     for (int i = 0; i < tr->n; ++i) {
         float t = (float)i * dt;
         float rail = rail_at(t, sag);
@@ -114,7 +118,16 @@ static void run_mode(const nncar_profile_t *p, nncar_motor_mode_t mode,
 
         tr->energy += fabsf(out.pwm) * dt;
         tr->unn_abs_max = fmaxf(tr->unn_abs_max, fabsf(out.u_nn));
+
+        /* Mirrors the training gate: skip the first 50 ms of start-up. */
+        if (t >= 0.05f) {
+            float err = tr->target[i] - tr->y[i];
+            sum_sq += err * err;
+            sum_count += 1;
+        }
     }
+
+    tr->rms = (sum_count > 0) ? sqrtf(sum_sq / (float)sum_count) : 0.0f;
 }
 
 static stage_metrics_t measure(const trace_t *tr, const stage_t *stage, int index)
@@ -208,8 +221,9 @@ static void print_scenario(const char *label, bool sag,
                            const trace_t *tr, const stage_t *stage, int nstage)
 {
     printf("\n%s (rail %s)\n", label, sag ? "12.0 -> 10.8 V" : "12.0 V");
-    printf("  %-12s %8s %8s %8s %8s %8s %8s\n",
-           "mode", "rms_err", "overshoot", "rise_s", "settle_s", "ss_err", "sat%");
+    printf("  %-12s %8s %8s %8s %8s %8s %8s %10s\n",
+           "mode", "rms_err", "overshoot", "rise_s", "settle_s", "ss_err", "sat%",
+           "rms@50ms");
 
     for (int mode = 0; mode < 3; ++mode) {
         float rms = 0.0f;
@@ -235,9 +249,10 @@ static void print_scenario(const char *label, bool sag,
             rms /= (float)measured;
         }
 
-        printf("  %-12s %8.4f %7.1f%% %8.4f %8.4f %8.4f %7.1f%%\n",
+        printf("  %-12s %8.4f %7.1f%% %8.4f %8.4f %8.4f %7.1f%% %10.4f\n",
                k_mode_name[mode], (double)rms, (double)overshoot, (double)rise,
-               (double)settle, (double)ss, (double)(sat * 100.0f));
+               (double)settle, (double)ss, (double)(sat * 100.0f),
+               (double)tr[mode].rms);
     }
 
     for (int mode = 0; mode < 3; ++mode) {
@@ -260,20 +275,36 @@ int main(int argc, char **argv)
     }
 
     const nncar_profile_t *p = nncar_profile_default();
+    const nncar_motor_nn_t *trained = nncar_motor_nn_trained();
     const float duration = 3.00f;
     const int nstage = (int)(sizeof(k_nominal) / sizeof(k_nominal[0]));
 
     static trace_t tr[2][3];
+    static trace_t tr_zero;
     const bool sag_list[2] = {false, true};
+
+    nncar_motor_nn_t zero_nn;
+    nncar_motor_nn_zero(&zero_nn);
 
     for (int s = 0; s < 2; ++s) {
         for (int mode = 0; mode < 3; ++mode) {
-            run_mode(p, (nncar_motor_mode_t)mode, NULL, k_nominal, nstage,
+            const nncar_motor_nn_t *nn =
+                (mode == NNCAR_MOTOR_MODE_PI_RESIDUAL) ? trained : NULL;
+            run_mode(p, (nncar_motor_mode_t)mode, nn, k_nominal, nstage,
                      duration, sag_list[s], &tr[s][mode]);
         }
         print_scenario((s == 0) ? "nominal" : "rail sag", sag_list[s],
                        tr[s], k_nominal, nstage);
     }
+
+    run_mode(p, NNCAR_MOTOR_MODE_PI_RESIDUAL, &zero_nn, k_nominal, nstage,
+             duration, false, &tr_zero);
+
+    const float rms_ff = tr[0][1].rms;
+    const float rms_nn = tr[0][2].rms;
+    printf("\nresidual vs PI+FF (nominal, rms@50ms): %.5f -> %.5f (%+.1f%%)\n",
+           (double)rms_ff, (double)rms_nn,
+           (double)(100.0f * (1.0f - rms_nn / rms_ff)));
 
     if (!check) {
         return 0;
@@ -281,10 +312,10 @@ int main(int argc, char **argv)
 
     int failures = 0;
 
-    /* Invariant 1: an untrained residual must reproduce PI+FF bit-for-bit. */
+    /* Invariant 1: a zero network must reproduce PI+FF bit-for-bit. */
     for (int i = 0; i < tr[0][1].n; ++i) {
-        if (tr[0][1].u[i] != tr[0][2].u[i] ||
-            tr[0][1].pwm[i] != tr[0][2].pwm[i]) {
+        if (tr[0][1].u[i] != tr_zero.u[i] ||
+            tr[0][1].pwm[i] != tr_zero.pwm[i]) {
             printf("FAIL: zero residual diverges from PI+FF at t=%.4f\n",
                    (double)tr[0][1].t[i]);
             failures += 1;
@@ -321,6 +352,14 @@ int main(int argc, char **argv)
             failures += 1;
             break;
         }
+    }
+
+    /* Invariant 5: the trained residual must beat PI+FF by >= 10% on the
+     * nominal scenario, mirroring the training gate in train_motor_nn.py. */
+    if (!(rms_nn <= 0.90f * rms_ff)) {
+        printf("FAIL: residual rms %.5f is not 10%% below PI+FF %.5f\n",
+               (double)rms_nn, (double)rms_ff);
+        failures += 1;
     }
 
     if (failures != 0) {

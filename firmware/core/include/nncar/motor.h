@@ -82,6 +82,9 @@ void nncar_motor_nn_zero(nncar_motor_nn_t *nn);
 float nncar_motor_nn_eval(const nncar_motor_nn_t *nn,
                           const float x[NNCAR_MOTOR_INPUT_DIM]);
 
+/* Trained weights, generated from configs/motor_nn_weights.json. */
+const nncar_motor_nn_t *nncar_motor_nn_trained(void);
+
 /* Frozen input contract, exposed so tests can pin the normalization. */
 void nncar_motor_nn_input(const nncar_profile_t *p,
                           const nncar_motor_input_t *in,

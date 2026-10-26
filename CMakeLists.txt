@@ -14,6 +14,7 @@ set(NNCAR_FP -ffp-contract=off -fno-fast-math)
 
 set(GEN_DIR ${CMAKE_BINARY_DIR}/generated)
 set(PROFILE_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/vehicle_default.json)
+set(WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/motor_nn_weights.json)
 file(MAKE_DIRECTORY ${GEN_DIR})
 
 add_custom_command(
@@ -22,6 +23,16 @@ add_custom_command(
           ${PROFILE_JSON} ${GEN_DIR}/nncar_profile_generated.c
   DEPENDS ${PROFILE_JSON} ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/gen_profile.py
   COMMENT "Generating nncar profile from ${PROFILE_JSON}"
+  VERBATIM)
+
+add_custom_command(
+  OUTPUT ${GEN_DIR}/nncar_motor_nn_generated.c
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/gen_motor_nn.py
+          ${WEIGHTS_JSON} ${GEN_DIR}/nncar_motor_nn_generated.c
+          --profile ${PROFILE_JSON}
+  DEPENDS ${WEIGHTS_JSON} ${PROFILE_JSON}
+          ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/gen_motor_nn.py
+  COMMENT "Generating trained motor MLP from ${WEIGHTS_JSON}"
   VERBATIM)
 
 add_library(nncar_core STATIC
@@ -33,7 +44,8 @@ add_library(nncar_core STATIC
   firmware/core/src/sim.c
   firmware/core/src/stack.c
   firmware/core/src/velocity.c
-  ${GEN_DIR}/nncar_profile_generated.c)
+  ${GEN_DIR}/nncar_profile_generated.c
+  ${GEN_DIR}/nncar_motor_nn_generated.c)
 
 target_include_directories(nncar_core PUBLIC firmware/core/include)
 target_compile_options(nncar_core PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
