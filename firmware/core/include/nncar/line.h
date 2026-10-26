@@ -2,6 +2,7 @@
 #define NNCAR_LINE_H
 
 #include "nncar/gray.h"
+#include "nncar/nn.h"
 #include "nncar/profile.h"
 
 typedef enum {
@@ -19,7 +20,9 @@ typedef enum {
      * s_v head so the only difference from CTRL_MLP is where the curvature
      * baseline comes from. A NULL network falls back to the PID.
      */
-    NNCAR_LINE_CTRL_MLP_RESIDUAL = 2
+    NNCAR_LINE_CTRL_MLP_RESIDUAL = 2,
+    /* Same policy as CTRL_MLP, evaluated with the int8 kernel and weights. */
+    NNCAR_LINE_CTRL_MLP_INT8 = 3
 } nncar_line_ctrl_t;
 
 #define NNCAR_LINE_INPUT_DIM 68
@@ -128,6 +131,13 @@ const nncar_line_nn_t *nncar_line_nn_trained(void);
 
 /* Residual-baseline weights, generated from configs/line_nn_residual.json. */
 const nncar_line_nn_t *nncar_line_nn_residual_trained(void);
+
+/* int8 weights + per-tensor scales, generated from the same JSON. */
+const nncar_nn_q_model_t *nncar_line_nn_int8_trained(void);
+
+/* int8 evaluation of the same policy; used by NNCAR_LINE_CTRL_MLP_INT8. */
+void nncar_line_nn_eval_q(const nncar_nn_q_model_t *nn,
+                          const float x[NNCAR_LINE_INPUT_DIM], float y[2]);
 
 /*
  * Curvature the PID would ask for at this exact state (post-envelope), i.e.

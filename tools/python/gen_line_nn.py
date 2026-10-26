@@ -85,6 +85,66 @@ def load_weights(path: Path) -> tuple[dict, dict]:
     return doc, weights
 
 
+def _cint(value) -> str:
+    return str(int(value))
+
+
+def render_int8(doc: dict, weights: dict, source: str) -> list[str]:
+    """Emit the int8 weights, int32 bias and per-layer scales."""
+    quant = doc.get("quant")
+    if quant is None:
+        return []
+
+    acts = quant["acts"]
+    w_scales = quant["w"]
+    dims = [INPUT_DIM, HIDDEN[0], HIDDEN[1], HIDDEN[2], OUTPUTS]
+
+    lines = ["", "/* int8 deployment of the same network. */"]
+    for i in range(1, 5):
+        w = weights[f"w{i}"]
+        scale = float(w_scales[i - 1])
+        q = np.clip(np.round(w / scale), -127, 127).astype(np.int32)
+        lines.append(f"static const int8_t g_line_i8_w{i}[{dims[i]}][{dims[i-1]}] = {{")
+        for r in range(dims[i]):
+            values = ", ".join(_cint(v) for v in q[:, r])
+            lines.append(f"    {{ {values} }},")
+        lines.append("};")
+
+        in_scale = float(acts[i - 1])
+        b = weights[f"b{i}"]
+        qb = np.round(b / (in_scale * scale)).astype(np.int64)
+        qb = np.clip(qb, -(2**31), 2**31 - 1)
+        lines.append(f"static const int32_t g_line_i8_b{i}[{dims[i]}] = {{")
+        lines.append("    " + ", ".join(_cint(v) for v in qb))
+        lines.append("};")
+
+    lines.append("")
+    lines.append("static const nncar_nn_q_layer_t g_line_i8_layers[4] = {")
+    acts_desc = ("NNCAR_NN_ACT_RELU", "NNCAR_NN_ACT_RELU", "NNCAR_NN_ACT_RELU",
+                 "NNCAR_NN_ACT_NONE")
+    for i in range(1, 5):
+        mult = float(acts[i - 1]) * float(w_scales[i - 1]) / float(acts[i])
+        # The last layer only dequantizes: its "output scale" is the scale of
+        # the int32 accumulator, not of an activation.
+        out_scale = (float(acts[i - 1]) * float(w_scales[i - 1]) if i == 4
+                     else float(acts[i]))
+        lines.append(
+            f"    {{{dims[i-1]}, {dims[i]}, {acts_desc[i-1]}, &g_line_i8_w{i}[0][0], "
+            f"g_line_i8_b{i}, {_cfloat(mult)}, {_cfloat(out_scale)}}},")
+    lines.append("};")
+    lines.append("")
+    lines.append("static const nncar_nn_q_model_t g_line_i8_model = {")
+    lines.append("    g_line_i8_layers, 4, " + _cfloat(acts[0]))
+    lines.append("};")
+    lines.append("")
+    lines.append("const nncar_nn_q_model_t *nncar_line_nn_int8_trained(void)")
+    lines.append("{")
+    lines.append("    return &g_line_i8_model;")
+    lines.append("}")
+    lines.append("")
+    return lines
+
+
 def render(doc: dict, weights: dict, source: str) -> str:
     residual = doc.get("model") == "line_mlp_residual"
     symbol = ("nncar_line_nn_residual_trained" if residual
@@ -124,6 +184,7 @@ def render(doc: dict, weights: dict, source: str) -> str:
         "}",
         "",
     ]
+    lines += render_int8(doc, weights, source)
     return "\n".join(lines)
 
 

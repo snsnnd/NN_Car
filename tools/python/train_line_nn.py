@@ -193,6 +193,26 @@ def train(net: dict[str, np.ndarray], x: np.ndarray, y: np.ndarray,
     return best
 
 
+def calibrate_scales(net: dict[str, np.ndarray], x_cal: np.ndarray) -> dict:
+    """Per-tensor symmetric scales for a straight int8 deployment.
+
+    acts[0] is the input, acts[1..3] the ReLU outputs, acts[4] the logits that
+    the head consumes, so the runtime can requantize layer by layer.
+    """
+    acts = [float(np.max(np.abs(x_cal))) / 127.0]
+    h = x_cal
+    for i in range(1, 4):
+        h = np.maximum(h @ net[f"w{i}"] + net[f"b{i}"], 0.0)
+        acts.append(float(np.max(np.abs(h))) / 127.0)
+    z = h @ net["w4"] + net["b4"]
+    acts.append(float(np.max(np.abs(z))) / 127.0)
+
+    weights = [float(np.max(np.abs(net[f"w{i}"]))) / 127.0 for i in range(1, 5)]
+
+    return {"acts": [a if a > 0.0 else 1.0e-8 for a in acts],
+            "w": [w if w > 0.0 else 1.0e-8 for w in weights]}
+
+
 def export_json(path: Path, net: dict[str, np.ndarray], meta: dict) -> None:
     doc = {
         "schema_version": "1.0.0",
@@ -215,6 +235,8 @@ def export_json(path: Path, net: dict[str, np.ndarray], meta: dict) -> None:
             "w4": [HIDDEN[2], OUTPUTS], "b4": [OUTPUTS],
         },
     }
+    if "quant" in meta:
+        doc["quant"] = meta["quant"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
@@ -225,6 +247,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--out-json", default="configs/line_nn_weights.json")
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--int8", action="store_true",
+                        help="also emit per-tensor int8 calibration scales")
     parser.add_argument("--qat", action="store_true",
                         help="quantization-aware training (int8 fake-quant)")
     parser.add_argument("--residual", action="store_true",
@@ -284,10 +308,12 @@ def main(argv: list[str]) -> int:
         print(f"  label std: s_v={math.sqrt(float(var[0])):.4f} "
               f"kappa={math.sqrt(float(var[1])):.4f}")
 
-    export_json(Path(args.out_json), net,
-                {"seed": args.seed, "epochs": args.epochs,
-                 "samples": int(x.shape[0]), "residual": args.residual, "qat": args.qat,
-                 "metrics": metrics})
+    meta = {"seed": args.seed, "epochs": args.epochs,
+            "samples": int(x.shape[0]), "residual": args.residual, "qat": args.qat,
+            "metrics": metrics}
+    if args.int8:
+        meta["quant"] = calibrate_scales(net, x[:4096])
+    export_json(Path(args.out_json), net, meta)
 
     if not args.quiet:
         print(f"  wrote {args.out_json}")

@@ -1,7 +1,6 @@
 #include "nncar/line.h"
 #include "nncar/motor.h"
 #include "nncar/nn.h"
-
 #include "test_util.h"
 
 /*
@@ -148,11 +147,33 @@ static void test_zero_network(void)
     CHECK_NEAR(y[1], 0.0f, 1.0e-12f);
 }
 
+/* The int8 kernel must track the float kernel closely; a scale or buffer
+ * aliasing bug shows up here long before it reaches the closed loop. */
+static void test_int8_matches_float(void)
+{
+    float x[NNCAR_LINE_INPUT_DIM];
+    for (int i = 0; i < NNCAR_LINE_INPUT_DIM; ++i) {
+        x[i] = (float)((i % 13) - 6) / 6.0f;
+    }
+
+    float yf[2];
+    float yq[2];
+    nncar_line_nn_eval(nncar_line_nn_trained(), x, yf);
+    nncar_line_nn_eval_q(nncar_line_nn_int8_trained(), x, yq);
+
+    CHECK_NEAR(yq[0], yf[0], 0.03f);
+    CHECK_NEAR(yq[1], yf[1], 0.06f);
+
+    const nncar_nn_q_model_t *m = nncar_line_nn_int8_trained();
+    CHECK(nncar_nn_q_scratch_len(m) == 2u * NNCAR_LINE_H1 + NNCAR_LINE_INPUT_DIM);
+}
+
 int main(void)
 {
     test_activations();
     test_ping_pong();
     test_golden(nncar_line_nn_trained(), nncar_motor_nn_trained());
     test_zero_network();
+    test_int8_matches_float();
     return 0;
 }

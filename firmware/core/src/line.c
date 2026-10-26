@@ -252,19 +252,23 @@ static nncar_twist_t residual_step(const nncar_profile_t *p,
     return nncar_twist_envelope(p, twist, v_max_eff);
 }
 
-static nncar_twist_t mlp_step(const nncar_profile_t *p,
-                              const nncar_gray_frame_t *frame,
-                              const nncar_line_estimate_t *est,
-                              float v_desired,
-                              float v_max_eff,
-                              const nncar_line_nn_t *nn)
+void nncar_line_nn_eval_q(const nncar_nn_q_model_t *nn,
+                          const float x[NNCAR_LINE_INPUT_DIM], float y[2])
 {
-    float x[NNCAR_LINE_INPUT_DIM];
-    float y[2];
+    /* 2 x widest hidden layer + the quantized input buffer. */
+    int8_t scratch[2 * NNCAR_LINE_H1 + NNCAR_LINE_INPUT_DIM];
+    float z[2];
 
-    nncar_line_nn_input(p, frame, est, v_desired, x);
-    nncar_line_nn_eval(nn, x, y);
+    nncar_nn_q_forward(nn, x, z, scratch);
 
+    y[0] = 1.0f / (1.0f + expf(-z[0]));
+    y[1] = tanhf(z[1]);
+}
+
+/* Shared tail: [s_v, kappa_norm] -> enveloped twist, with the loop gain. */
+static nncar_twist_t mlp_apply(const nncar_profile_t *p, const float y[2],
+                               float v_desired, float v_max_eff)
+{
     /*
      * Per-sample MSE training makes the network return the conditional mean of
      * kappa, which under-shoots the amplitude the closed loop needs. The bench
@@ -281,6 +285,38 @@ static nncar_twist_t mlp_step(const nncar_profile_t *p,
     twist.omega = kappa * twist.v;
 
     return nncar_twist_envelope(p, twist, v_max_eff);
+}
+
+static nncar_twist_t mlp_step(const nncar_profile_t *p,
+                              const nncar_gray_frame_t *frame,
+                              const nncar_line_estimate_t *est,
+                              float v_desired,
+                              float v_max_eff,
+                              const nncar_line_nn_t *nn)
+{
+    float x[NNCAR_LINE_INPUT_DIM];
+    float y[2];
+
+    nncar_line_nn_input(p, frame, est, v_desired, x);
+    nncar_line_nn_eval(nn, x, y);
+
+    return mlp_apply(p, y, v_desired, v_max_eff);
+}
+
+static nncar_twist_t mlp_step_q(const nncar_profile_t *p,
+                                const nncar_gray_frame_t *frame,
+                                const nncar_line_estimate_t *est,
+                                float v_desired,
+                                float v_max_eff,
+                                const nncar_nn_q_model_t *nnq)
+{
+    float x[NNCAR_LINE_INPUT_DIM];
+    float y[2];
+
+    nncar_line_nn_input(p, frame, est, v_desired, x);
+    nncar_line_nn_eval_q(nnq, x, y);
+
+    return mlp_apply(p, y, v_desired, v_max_eff);
 }
 
 nncar_twist_t nncar_line_step(const nncar_profile_t *p,
@@ -342,14 +378,20 @@ nncar_twist_t nncar_line_step(const nncar_profile_t *p,
                            (frame->value != NULL);
     const bool use_direct = (st->ctrl == NNCAR_LINE_CTRL_MLP) && net_ready;
     const bool use_residual = (st->ctrl == NNCAR_LINE_CTRL_MLP_RESIDUAL) && net_ready;
+    const bool use_int8 = (st->ctrl == NNCAR_LINE_CTRL_MLP_INT8) &&
+                          (nncar_line_nn_int8_trained() != NULL) &&
+                          (frame != NULL) && (frame->value != NULL);
 
     if (use_direct) {
         cmd = mlp_step(p, frame, est, v_desired, v_max_eff, st->nn);
     } else if (use_residual) {
         cmd = residual_step(p, frame, est, st, v_desired, v_max_eff, st->nn);
+    } else if (use_int8) {
+        cmd = mlp_step_q(p, frame, est, v_desired, v_max_eff,
+                         nncar_line_nn_int8_trained());
     }
 
-    if ((!use_direct && !use_residual) || !nncar_finite(cmd.v) ||
+    if ((!use_direct && !use_residual && !use_int8) || !nncar_finite(cmd.v) ||
         !nncar_finite(cmd.omega)) {
         /* Deterministic fallback; the derivative state is shared, so it is warm. */
         cmd = pid_step(p, st, est, v_desired, v_max_eff);

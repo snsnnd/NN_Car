@@ -13,7 +13,8 @@ typedef enum {
     SRC_PID = 0,
     SRC_MLP = 1,
     SRC_ORACLE = 2,
-    SRC_RESIDUAL = 3
+    SRC_RESIDUAL = 3,
+    SRC_INT8 = 4
 } src_t;
 
 typedef struct {
@@ -261,6 +262,8 @@ static void run_stack(const nncar_profile_t *p, const scenario_t *sc, src_t src,
         ctrl = NNCAR_LINE_CTRL_MLP;
     } else if (src == SRC_RESIDUAL) {
         ctrl = NNCAR_LINE_CTRL_MLP_RESIDUAL;
+    } else if (src == SRC_INT8) {
+        ctrl = NNCAR_LINE_CTRL_MLP_INT8;
     }
     nncar_stack_set_line_ctrl(&stack, ctrl, (src == SRC_PID) ? NULL : nn);
 
@@ -574,8 +577,9 @@ static void dump_teacher(const nncar_profile_t *p, const char *path, int episode
 
 static void print_header(void)
 {
-    printf("\n%-12s %8s %8s %8s %8s %8s %8s %8s\n", "scenario", "pid_rms", "mlp_rms",
-           "res_rms", "orc_rms", "pid_max", "mlp_max", "pid_dw");
+    printf("\n%-12s %8s %8s %8s %8s %8s %8s %8s %8s\n", "scenario", "pid_rms",
+           "mlp_rms", "res_rms", "i8_rms", "orc_rms", "pid_max", "mlp_max",
+           "pid_dw");
 }
 
 int main(int argc, char **argv)
@@ -630,6 +634,7 @@ int main(int argc, char **argv)
     metrics_t pid[SUITE_COUNT];
     metrics_t mlp[SUITE_COUNT];
     metrics_t res[SUITE_COUNT];
+    metrics_t i8[SUITE_COUNT];
     metrics_t orc[SUITE_COUNT];
 
     printf("line A/B (profile %s, line_dt %.3f s, %d scenarios)\n", nncar_profile_name(),
@@ -641,11 +646,13 @@ int main(int argc, char **argv)
         run_one(p, &k_suite[i], SRC_PID, NULL, s, &pid[i], NULL);
         run_one(p, &k_suite[i], SRC_MLP, trained, s, &mlp[i], NULL);
         run_one(p, &k_suite[i], SRC_RESIDUAL, residual_nn, s, &res[i], NULL);
+        run_one(p, &k_suite[i], SRC_INT8, NULL, s, &i8[i], NULL);
         run_one(p, &k_suite[i], SRC_ORACLE, NULL, s, &orc[i], NULL);
 
-        printf("%-12s %8.4f %8.4f %8.4f %8.4f %8.4f %8.4f %8.4f\n", k_suite[i].name,
-               (double)metric_rms(&pid[i]), (double)metric_rms(&mlp[i]),
-               (double)metric_rms(&res[i]), (double)metric_rms(&orc[i]),
+        printf("%-12s %8.4f %8.4f %8.4f %8.4f %8.4f %8.4f %8.4f %8.4f\n",
+               k_suite[i].name, (double)metric_rms(&pid[i]),
+               (double)metric_rms(&mlp[i]), (double)metric_rms(&res[i]),
+               (double)metric_rms(&i8[i]), (double)metric_rms(&orc[i]),
                (double)pid[i].max_lat, (double)mlp[i].max_lat,
                (double)metric_domega(&pid[i]));
     }
@@ -653,10 +660,11 @@ int main(int argc, char **argv)
     const float pid_agg = aggregate(pid);
     const float mlp_agg = aggregate(mlp);
     const float res_agg = aggregate(res);
+    const float i8_agg = aggregate(i8);
     const float orc_agg = aggregate(orc);
 
-    printf("%-12s %8.4f %8.4f %8.4f %8.4f\n", "aggregate", (double)pid_agg,
-           (double)mlp_agg, (double)res_agg, (double)orc_agg);
+    printf("%-12s %8.4f %8.4f %8.4f %8.4f %8.4f\n", "aggregate", (double)pid_agg,
+           (double)mlp_agg, (double)res_agg, (double)i8_agg, (double)orc_agg);
 
     printf("\n%-12s %8s %8s %8s %8s %8s\n", "scenario", "out%_pid", "out%_mlp",
            "spd_pid", "spd_mlp", "recov_s");
@@ -678,6 +686,8 @@ int main(int argc, char **argv)
     printf("\nA/B: PID %.5f -> MLP %.5f (%+.1f%%), oracle %.5f\n", (double)pid_agg,
            (double)mlp_agg, (double)(100.0f * (1.0f - mlp_agg / pid_agg)),
            (double)orc_agg);
+    printf("     int8     %.5f (%+.1f%% vs MLP fp32)\n", (double)i8_agg,
+           (double)(100.0f * (1.0f - i8_agg / mlp_agg)));
     printf("     residual %.5f (%+.1f%% vs PID, %+.1f%% vs MLP)\n", (double)res_agg,
            (double)(100.0f * (1.0f - res_agg / pid_agg)),
            (double)(100.0f * (1.0f - res_agg / mlp_agg)));
