@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import sys
 import tempfile
 from pathlib import Path
@@ -14,6 +15,7 @@ sys.path.insert(0, str(HERE))
 
 import gen_profile  # noqa: E402
 import golden  # noqa: E402
+import identify_motor  # noqa: E402
 import validate_log  # noqa: E402
 
 ROOT = HERE.parents[1]
@@ -185,12 +187,76 @@ def test_golden(tmp: Path) -> None:
     check(not problems, f"golden: tolerance too strict {problems}")
 
 
+def test_identification(tmp: Path) -> None:
+    """Identify a synthetic first-order plant and require tight recovery."""
+    dt = 0.002
+    gain = 1.5
+    tau = 0.05
+    deadband = 0.07
+    rail_nom = 12.0
+
+    plan: list[tuple[float, float]] = []
+    plan += [(0.01 * i, 12.0) for i in range(1, 13)]
+    plan += [(level, 12.0) for level in (0.2, 0.35, 0.5, 0.7, 0.9)]
+    plan += [(0.0, 12.0)]
+    plan += [(-0.01 * i, 12.0) for i in range(1, 13)]
+    plan += [(level, 12.0) for level in (-0.35, -0.7)]
+    plan += [(0.5, rail) for rail in (11.0, 10.5, 12.0)]
+    durations = ([0.25] * 12 + [0.40] * 5 + [0.50]
+                 + [0.25] * 12 + [0.40] * 2 + [0.40] * 3)
+
+    rows: list[dict] = []
+    t_us = 0
+    speed = 0.0
+    decay = math.exp(-dt / tau)
+
+    for sid, ((pwm, rail), duration) in enumerate(zip(plan, durations), start=1):
+        drive = 0.0
+        if abs(pwm) > deadband:
+            drive = math.copysign((abs(pwm) - deadband) / (1.0 - deadband), pwm)
+        settled = gain * drive * rail / rail_nom
+        for _ in range(int(round(duration / dt))):
+            speed = settled + (speed - settled) * decay
+            rows.append({
+                "t_us": t_us, "segment_id": sid, "phase": 1,
+                "pwm": pwm, "v_rail": rail,
+                "v_left": speed, "v_right": speed,
+                "w_left": speed, "w_right": speed, "load_nm": 0.0,
+            })
+            t_us += int(dt * 1e6)
+
+    path = tmp / "bench_selftest.csv"
+    write_csv(path, rows, list(identify_motor.REQUIRED_COLUMNS))
+
+    segments, count = identify_motor.load_segments(path)
+    result = identify_motor.identify_segments(
+        segments, identify_motor.estimate_dt(segments), count, "selftest")
+
+    check(abs(result["deadband"] - deadband) <= 0.005,
+          f"identify: deadband {result['deadband']:.4f} != {deadband}")
+    for channel in identify_motor.CHANNELS:
+        identified = result[channel]
+        gain_err = abs(identified["static_gain_mps"] - gain) / gain
+        tau_err = abs(identified["tau_s"] - tau) / tau
+        check(gain_err < 0.01,
+              f"identify: {channel} gain error {gain_err * 100:.2f}%")
+        check(tau_err < 0.02,
+              f"identify: {channel} tau error {tau_err * 100:.2f}%")
+
+    check(not result["checks"]["warnings"],
+          f"identify: unexpected warnings {result['checks']['warnings']}")
+    rail_error = result["rail"]["max_rel_error"]
+    check(rail_error is not None and rail_error < 0.02,
+          f"identify: rail model error {rail_error}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         test_profile_generation(tmp)
         test_validation(tmp)
         test_golden(tmp)
+        test_identification(tmp)
 
     if FAILURES:
         for failure in FAILURES:

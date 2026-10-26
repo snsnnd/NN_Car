@@ -55,6 +55,10 @@ add_executable(nncar_replay firmware/host/src/replay_main.c)
 target_compile_options(nncar_replay PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
 target_link_libraries(nncar_replay PRIVATE nncar_core)
 
+add_executable(nncar_bench firmware/host/src/bench_main.c)
+target_compile_options(nncar_bench PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
+target_link_libraries(nncar_bench PRIVATE nncar_core)
+
 enable_testing()
 
 foreach(t gray line mixer motor safety sim)
@@ -70,3 +74,21 @@ add_test(NAME python_tools
 
 add_test(NAME replay_golden
          COMMAND nncar_replay ${CMAKE_CURRENT_SOURCE_DIR}/golden/run_straight.csv)
+
+set(BENCH_CSV ${CMAKE_BINARY_DIR}/bench.csv)
+set(BENCH_TRUTH ${CMAKE_BINARY_DIR}/bench_truth.json)
+set(BENCH_SCHEMA ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema/bench_log.schema.json)
+
+add_test(NAME bench_excitation
+         COMMAND nncar_bench --out ${BENCH_CSV} --truth ${BENCH_TRUTH})
+
+add_test(NAME bench_schema
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/validate_log.py
+                 ${BENCH_CSV} --schema ${BENCH_SCHEMA} --quiet)
+set_tests_properties(bench_schema PROPERTIES DEPENDS bench_excitation)
+
+add_test(NAME bench_identify
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/identify_motor.py
+                 ${BENCH_CSV} --truth ${BENCH_TRUTH}
+                 --out ${CMAKE_BINARY_DIR}/motor_identified.json --quiet)
+set_tests_properties(bench_identify PROPERTIES DEPENDS bench_excitation)

@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/snsnnd/NN_Car/schema/bench_log.schema.json",
+  "title": "NN_Car motor bench log",
+  "description": "Excitation/acquisition CSV exported by the bench firmware or the simulated bench plant.",
+  "type": "object",
+  "x-csv": {
+    "delimiter": ",",
+    "required_columns": [
+      "t_us", "segment_id", "phase", "pwm", "v_rail",
+      "v_left", "v_right", "w_left", "w_right", "load_nm"
+    ],
+    "integer_columns": ["t_us", "segment_id", "phase"],
+    "flags": {
+      "phase": [1, 4]
+    },
+    "ranges": {
+      "pwm": [-1.0, 1.0],
+      "v_rail": [0.0, 20.0],
+      "v_left": [-3.0, 3.0],
+      "v_right": [-3.0, 3.0],
+      "w_left": [-300.0, 300.0],
+      "w_right": [-300.0, 300.0],
+      "load_nm": [-1.0, 1.0]
+    },
+    "monotonic": {
+      "t_us": "strictly_increasing"
+    }
+  }
+}

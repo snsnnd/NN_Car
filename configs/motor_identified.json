@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.0.0",
+  "model": "first_order_dc_motor_with_deadband",
+  "label": "simulated_bench",
+  "source_csv": "bench.csv",
+  "rows": 5250,
+  "segments": 35,
+  "tick_dt_s": 0.002,
+  "rail_nominal_v": 12.0,
+  "velocity_scale_mps": 1.33871,
+  "deadband": 0.07,
+  "left": {
+    "static_gain_mps": 1.5,
+    "tau_s": 0.048993,
+    "deadband": 0.07,
+    "deadband_quantized": 0.075,
+    "deadband_positive": 0.07,
+    "deadband_negative": 0.07,
+    "gain_samples": 9,
+    "tau_samples": 9,
+    "tau_min_s": 0.048993,
+    "tau_max_s": 0.048995,
+    "gain_regression_positive": 1.5,
+    "gain_regression_negative": 1.5
+  },
+  "right": {
+    "static_gain_mps": 1.291667,
+    "tau_s": 0.045289,
+    "deadband": 0.07,
+    "deadband_quantized": 0.075,
+    "deadband_positive": 0.07,
+    "deadband_negative": 0.07,
+    "gain_samples": 9,
+    "tau_samples": 9,
+    "tau_min_s": 0.045289,
+    "tau_max_s": 0.045289,
+    "gain_regression_positive": 1.291667,
+    "gain_regression_negative": 1.291667
+  },
+  "rail": {
+    "levels": [
+      {
+        "rail_v": 11.0,
+        "wheel": {
+          "left": {
+            "measured_mps": 0.635753,
+            "predicted_mps": 0.635753,
+            "error_rel": 0.0,
+            "error_rel_if_rail_ignored": 0.083333
+          },
+          "right": {
+            "measured_mps": 0.547454,
+            "predicted_mps": 0.547454,
+            "error_rel": 0.0,
+            "error_rel_if_rail_ignored": 0.083333
+          }
+        }
+      },
+      {
+        "rail_v": 10.5,
+        "wheel": {
+          "left": {
+            "measured_mps": 0.606855,
+            "predicted_mps": 0.606855,
+            "error_rel": 0.0,
+            "error_rel_if_rail_ignored": 0.125
+          },
+          "right": {
+            "measured_mps": 0.522569,
+            "predicted_mps": 0.522569,
+            "error_rel": 0.0,
+            "error_rel_if_rail_ignored": 0.125
+          }
+        }
+      }
+    ],
+    "max_rel_error": 0.0,
+    "max_rel_error_if_rail_ignored": 0.125
+  },
+  "checks": {
+    "warnings": []
+  },
+  "verified": false,
+  "truth_check": {
+    "passed": true,
+    "gain_tolerance_rel": 0.03,
+    "tau_tolerance_rel": 0.1,
+    "deadband_tolerance_abs": 0.01,
+    "detail": [
+      "left: gain 1.5000 vs 1.5000 (0.00%), tau 48.99ms vs 50.00ms (2.01%), deadband 0.0700 vs 0.0700 (0.0000)",
+      "right: gain 1.2917 vs 1.2917 (0.00%), tau 45.29ms vs 46.30ms (2.18%), deadband 0.0700 vs 0.0700 (0.0000)"
+    ]
+  }
+}
