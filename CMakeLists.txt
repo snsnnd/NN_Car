@@ -45,6 +45,7 @@ add_custom_command(
   VERBATIM)
 
 add_library(nncar_core STATIC
+  firmware/core/src/calib.c
   firmware/core/src/gray.c
   firmware/core/src/line.c
   firmware/core/src/mixer.c
@@ -92,7 +93,7 @@ target_link_libraries(nncar_line_ab PRIVATE nncar_core)
 
 enable_testing()
 
-foreach(t gray line mixer motor nn safety sim)
+foreach(t calib gray line mixer motor nn safety sim)
   add_executable(test_${t} firmware/tests/test_${t}.c)
   target_include_directories(test_${t} PRIVATE firmware/tests)
   target_compile_options(test_${t} PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
