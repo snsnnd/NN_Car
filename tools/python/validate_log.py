@@ -82,6 +82,58 @@ def _check_manifest(manifest: dict, schema: dict, report: Report) -> None:
     if manifest.get("profile_verified") is False:
         report.warn("manifest: profile is marked unverified (placeholder parameters)")
 
+    for section_name in ("vehicle", "simulation"):
+        section_spec = props.get(section_name, {})
+        section = manifest.get(section_name)
+        if not isinstance(section, dict):
+            if section_name in manifest:
+                report.error(f"manifest: '{section_name}' must be an object")
+            continue
+        for key in section_spec.get("required", []):
+            if key not in section:
+                report.error(f"manifest: {section_name} missing '{key}'")
+        for key, spec in section_spec.get("properties", {}).items():
+            if key not in section:
+                continue
+            value = section[key]
+            kind = spec.get("type")
+            if kind == "number" and (not isinstance(value, (int, float)) or isinstance(value, bool)):
+                report.error(f"manifest: {section_name}.{key} must be numeric")
+                continue
+            if kind == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
+                report.error(f"manifest: {section_name}.{key} must be an integer")
+                continue
+            if kind == "string" and not isinstance(value, str):
+                report.error(f"manifest: {section_name}.{key} must be a string")
+                continue
+            if kind == "array":
+                if not isinstance(value, list):
+                    report.error(f"manifest: {section_name}.{key} must be an array")
+                    continue
+                if len(value) < spec.get("minItems", 0) or len(value) > spec.get("maxItems", float("inf")):
+                    report.error(f"manifest: {section_name}.{key} has invalid length")
+                item_kind = spec.get("items", {}).get("type")
+                if item_kind == "number" and any(
+                    not isinstance(item, (int, float)) or isinstance(item, bool)
+                    for item in value
+                ):
+                    report.error(f"manifest: {section_name}.{key} must contain only numbers")
+                continue
+            if kind in ("number", "integer"):
+                if "minimum" in spec and value < spec["minimum"]:
+                    report.error(f"manifest: {section_name}.{key} is below minimum")
+                if "maximum" in spec and value > spec["maximum"]:
+                    report.error(f"manifest: {section_name}.{key} is above maximum")
+                if "exclusiveMinimum" in spec and value <= spec["exclusiveMinimum"]:
+                    report.error(f"manifest: {section_name}.{key} must exceed minimum")
+
+    vehicle = manifest.get("vehicle")
+    if isinstance(vehicle, dict):
+        positions = vehicle.get("sensor_position_m")
+        count = vehicle.get("sensor_count")
+        if isinstance(positions, list) and isinstance(count, int) and len(positions) != count:
+            report.error("manifest: vehicle.sensor_position_m length must equal sensor_count")
+
 
 def validate(csv_path: Path,
              manifest_path: Path | None = None,
@@ -120,6 +172,29 @@ def validate(csv_path: Path,
         if missing:
             return report
 
+        checked_columns = list(required)
+        sensor_spec = csv_spec.get("optional_sensor_channels")
+        sensor_columns: list[str] = []
+        if isinstance(sensor_spec, dict):
+            sensor_count = int(sensor_spec.get("count", 0))
+            value_prefix = sensor_spec.get("value_prefix", "")
+            exist_prefix = sensor_spec.get("exist_prefix", "")
+            valid_prefix = sensor_spec.get("valid_prefix", "")
+            for sensor_index in range(sensor_count):
+                suffix = f"{sensor_index:02d}"
+                channel = [value_prefix + suffix, exist_prefix + suffix, valid_prefix + suffix]
+                channel_present = [column in header for column in channel]
+                if any(channel_present) and not all(channel_present):
+                    report.error(f"csv: sensor channel {sensor_index} is incomplete")
+                if all(channel_present):
+                    sensor_columns.extend(channel)
+                    integer_cols.update(channel[1:])
+                    flags[channel[1]] = [0, 1]
+                    flags[channel[2]] = [0, 1]
+                    ranges[channel[0]] = sensor_spec.get("value_range", [-1.0, 1.0])
+            if sensor_columns:
+                checked_columns.extend(sensor_columns)
+
         prev_t = None
         prev_dt = None
         constant_dt = True
@@ -128,7 +203,7 @@ def validate(csv_path: Path,
             report.rows += 1
             where = f"csv row {index + 2}"
 
-            for column in required:
+            for column in checked_columns:
                 raw = row.get(column, "")
                 try:
                     value = float(raw)
@@ -164,6 +239,14 @@ def validate(csv_path: Path,
                             constant_dt = False
                         prev_dt = dt
                     prev_t = t
+
+            if sensor_columns:
+                for sensor_index in range(sensor_count):
+                    value = row.get(f"gray_value_{sensor_index:02d}", "")
+                    exist = row.get(f"gray_exist_{sensor_index:02d}", "")
+                    valid = row.get(f"gray_valid_{sensor_index:02d}", "")
+                    if exist == "0" and valid != "0":
+                        report.error(f"{where}: absent gray sensor {sensor_index} cannot be valid")
 
         if report.rows == 0:
             report.error("csv: no data rows")

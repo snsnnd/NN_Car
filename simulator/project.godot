@@ -1,0 +1,25 @@
+; Engine configuration file.
+; NN_Car uses Godot as a visualization and replay front-end for the C simulator.
+
+config_version=5
+
+[application]
+
+config/name="NN_Car Simulation Viewer"
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+
+[display]
+
+window/size/viewport_width=1440
+window/size/viewport_height=900
+window/size/window_width_override=1440
+window/size/window_height_override=900
+window/stretch/mode="canvas_items"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/default_filters/use_nearest_mipmap_filter=false
+environment/defaults/default_clear_color=Color(0.0352941, 0.0509804, 0.0745098, 1)

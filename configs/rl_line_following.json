@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0.0",
+  "environment_id": "NNCarLineFollowing-v0",
+  "description": "C-stack line-following task; RL replaces tracking policy, C recovery remains active.",
+  "action": {
+    "shape": [2],
+    "minimum": -1.0,
+    "maximum": 1.0,
+    "fields": ["speed_scale", "curvature_norm"],
+    "speed_mapping": "s_v = (action[0] + 1) / 2",
+    "curvature_mapping": "kappa_norm = action[1]"
+  },
+  "observation": {
+    "fields": ["gray_value[16]", "gray_exist[16]", "gray_valid[16]", "wheel_velocity_mps[2]"],
+    "gray_value_range": [-1.0, 1.0],
+    "wheel_velocity_range_mps": [-3.0, 3.0],
+    "privileged_state_excluded": ["x", "y", "theta", "track_error", "track_heading"]
+  },
+  "episode": {
+    "control_frequency_hz": 100,
+    "horizon_steps": 1000,
+    "desired_speed_mps": 0.9,
+    "terminate_lateral_error_m": 0.12,
+    "terminate_heading_error_deg": 80.0
+  },
+  "reward": {
+    "formula": "1 - abs(lateral_error)/lateral_limit - 0.25*abs(heading_error)/heading_limit - 0.01*(speed_scale^2 + curvature_norm^2); subtract 1 on termination",
+    "uses_privileged_sim_state": true
+  },
+  "domain_randomization": {
+    "initial_lateral_offset_m": [-0.04, 0.04],
+    "initial_heading_error_deg": [-6.0, 6.0],
+    "track_amplitude_m": [0.0, 0.02],
+    "track_wavelength_m": [0.6, 1.2],
+    "gray_noise_std": [0.0, 0.03],
+    "gray_offset": [-0.02, 0.02],
+    "gray_gain": [0.9, 1.1],
+    "gray_valid_probability": [0.95, 1.0],
+    "gray_missing_mask_choices": [0, 4]
+  }
+}

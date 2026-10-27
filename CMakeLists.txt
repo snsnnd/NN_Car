@@ -97,6 +97,10 @@ add_executable(nncar_sim firmware/host/src/sim_main.c)
 target_compile_options(nncar_sim PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
 target_link_libraries(nncar_sim PRIVATE nncar_host)
 
+add_executable(nncar_rl_env firmware/host/src/rl_env_main.c)
+target_compile_options(nncar_rl_env PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
+target_link_libraries(nncar_rl_env PRIVATE nncar_core)
+
 add_executable(nncar_replay firmware/host/src/replay_main.c)
 target_compile_options(nncar_replay PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
 target_link_libraries(nncar_replay PRIVATE nncar_core)
@@ -132,6 +136,23 @@ add_test(NAME python_tools
 
 add_test(NAME replay_golden
          COMMAND nncar_replay ${CMAKE_CURRENT_SOURCE_DIR}/golden/run_straight.csv)
+
+set(SIM_CSV ${CMAKE_BINARY_DIR}/sim_run.csv)
+set(SIM_MANIFEST ${CMAKE_BINARY_DIR}/sim_run.manifest.json)
+add_test(NAME sim_run
+         COMMAND nncar_sim --out ${SIM_CSV} --manifest ${SIM_MANIFEST}
+                 --duration 1 --seed 42 --gray-noise 0.03
+                 --gray-valid-prob 0.95 --gray-missing-mask 0x4)
+add_test(NAME sim_run_schema
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/validate_log.py
+                 ${SIM_CSV} --manifest ${SIM_MANIFEST} --schema
+                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema/run_log.schema.json --quiet)
+set_tests_properties(sim_run_schema PROPERTIES DEPENDS sim_run)
+add_test(NAME replay_sim_run COMMAND nncar_replay ${SIM_CSV})
+set_tests_properties(replay_sim_run PROPERTIES DEPENDS sim_run)
+add_test(NAME rl_environment
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/test_rl_env.py
+                 $<TARGET_FILE:nncar_rl_env>)
 
 add_test(NAME baseline_modes COMMAND nncar_baseline --check)
 

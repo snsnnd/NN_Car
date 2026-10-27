@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#include "nncar/types.h"
+
 /* Host-only debugging/logging path. Not used on the MCU. */
 typedef struct {
     FILE *fp;
@@ -40,6 +42,9 @@ typedef struct {
     float y;
     float theta;
     float recovery_ms;
+    float gray_value[NNCAR_MAX_SENSORS];
+    uint8_t gray_exist[NNCAR_MAX_SENSORS];
+    uint8_t gray_valid[NNCAR_MAX_SENSORS];
 } nncar_log_row_t;
 
 int nncar_log_open(nncar_logger_t *lg, const char *path);

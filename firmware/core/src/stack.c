@@ -30,13 +30,14 @@ void nncar_stack_set_line_ctrl(nncar_stack_t *st, nncar_line_ctrl_t ctrl,
     nncar_line_set_ctrl(&st->line, ctrl, nn);
 }
 
-nncar_stack_output_t nncar_stack_step(nncar_stack_t *st,
-                                      const nncar_profile_t *p,
-                                      const nncar_stack_input_t *in,
-                                      const float gray_value[NNCAR_MAX_SENSORS],
-                                      const uint8_t gray_exist[NNCAR_MAX_SENSORS],
-                                      const uint8_t gray_valid[NNCAR_MAX_SENSORS],
-                                      float dt_s)
+static nncar_stack_output_t stack_step(nncar_stack_t *st,
+                                       const nncar_profile_t *p,
+                                       const nncar_stack_input_t *in,
+                                       const float *gray_value,
+                                       const uint8_t gray_exist[NNCAR_MAX_SENSORS],
+                                       const uint8_t gray_valid[NNCAR_MAX_SENSORS],
+                                       const float *action,
+                                       float dt_s)
 {
     nncar_stack_output_t out;
 
@@ -52,9 +53,25 @@ nncar_stack_output_t nncar_stack_step(nncar_stack_t *st,
 
         nncar_gray_process(p, gray_value, gray_exist, gray_valid, &st->estimate);
 
-        const nncar_gray_frame_t frame = {gray_value, gray_exist, gray_valid};
-        st->twist = nncar_line_step(p, &st->line, &frame, &st->estimate, in->v_desired,
-                                    v_max_eff, (float)in->now_us * 1.0e-6f, line_dt);
+        if (action == NULL) {
+            const nncar_gray_frame_t frame = {gray_value, gray_exist, gray_valid};
+            st->twist = nncar_line_step(p, &st->line, &frame, &st->estimate,
+                                        in->v_desired, v_max_eff,
+                                        (float)in->now_us * 1.0e-6f, line_dt);
+        } else {
+            const nncar_gray_frame_t frame = {gray_value, gray_exist, gray_valid};
+            nncar_twist_t recovery = nncar_line_step(
+                p, &st->line, &frame, &st->estimate, in->v_desired, v_max_eff,
+                (float)in->now_us * 1.0e-6f, line_dt);
+            if (st->line.mode == NNCAR_LINE_RECOVERY) {
+                st->twist = recovery;
+            } else {
+                float speed_scale = nncar_clampf(0.5f * (action[0] + 1.0f), 0.0f, 1.0f);
+                float curvature = nncar_clampf(action[1], -1.0f, 1.0f);
+                st->twist = nncar_twist_from_kappa(p, speed_scale, curvature,
+                                                   in->v_desired, v_max_eff);
+            }
+        }
         st->mix = nncar_mixer(p, st->twist, v_max_eff);
         st->line_accum_s = 0.0f;
         st->twist_age_s = 0.0f;
@@ -141,4 +158,27 @@ nncar_stack_output_t nncar_stack_step(nncar_stack_t *st,
     out.recovery_ms = st->line.recovery_time_s * 1000.0f;
 
     return out;
+}
+
+nncar_stack_output_t nncar_stack_step(nncar_stack_t *st,
+                                      const nncar_profile_t *p,
+                                      const nncar_stack_input_t *in,
+                                      const float *gray_value,
+                                      const uint8_t gray_exist[NNCAR_MAX_SENSORS],
+                                      const uint8_t gray_valid[NNCAR_MAX_SENSORS],
+                                      float dt_s)
+{
+    return stack_step(st, p, in, gray_value, gray_exist, gray_valid, NULL, dt_s);
+}
+
+nncar_stack_output_t nncar_stack_step_action(nncar_stack_t *st,
+                                             const nncar_profile_t *p,
+                                             const nncar_stack_input_t *in,
+                                             const float *gray_value,
+                                             const uint8_t gray_exist[NNCAR_MAX_SENSORS],
+                                             const uint8_t gray_valid[NNCAR_MAX_SENSORS],
+                                             const float action[2],
+                                             float dt_s)
+{
+    return stack_step(st, p, in, gray_value, gray_exist, gray_valid, action, dt_s);
 }

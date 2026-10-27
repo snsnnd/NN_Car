@@ -22,8 +22,9 @@ still reproduces PI+FF exactly.
 
 States are collected in closed loop (PI+FF baseline, or the current student for
 DAgger rounds), while the plant instance is randomised inside the identified
-uncertainty band.  A small fraction of episodes hides the rail sensor to teach
-the graceful path of the ``rail_exist`` / ``rail_valid`` inputs.
+uncertainty band. A small fraction of episodes has an invalid rail reading. The
+C Safety contract latches a stop in that case, so those stopped states are not
+used as NN teacher samples or as tracking-performance samples.
 
 Usage:
     python3 tools/python/motor_teacher.py --out build/motor_teacher.npz
@@ -86,7 +87,7 @@ def load_weights(path: str) -> dict[str, np.ndarray]:
 
 
 def forward(net: dict[str, np.ndarray], x: np.ndarray) -> np.ndarray:
-    """Shared MLP evaluation; x is (7,) or (batch, 7)."""
+    """Shared MLP evaluation; x is (8,) or (batch, 8)."""
     h1 = np.maximum(x @ net["w1"] + net["b1"], 0.0)
     h2 = np.maximum(h1 @ net["w2"] + net["b2"], 0.0)
     h3 = np.maximum(h2 @ net["w3"] + net["b3"], 0.0)
@@ -316,6 +317,11 @@ def rail_schedule(rng: np.random.Generator, steps: int) -> tuple[np.ndarray, np.
     return rail, valid
 
 
+def motor_available_mask(rail_valid: np.ndarray) -> np.ndarray:
+    """Mirror the latched C Safety stop after an invalid rail sample."""
+    return np.logical_and.accumulate(np.asarray(rail_valid, dtype=bool))
+
+
 def generate(profile: dict, identified: dict, episodes: int, seed: int,
              duration_s: float, residual_fn=None) -> dict[str, np.ndarray]:
     rng = np.random.default_rng(seed)
@@ -329,6 +335,7 @@ def generate(profile: dict, identified: dict, episodes: int, seed: int,
     xs: list[np.ndarray] = []
     ts: list[np.ndarray] = []
     eps: list[np.ndarray] = []
+    available_rows: list[np.ndarray] = []
     params = np.zeros((episodes, 4), dtype=np.float32)
     all_targets = np.zeros((episodes, steps), dtype=np.float32)
     all_rail = np.zeros((episodes, steps), dtype=np.float32)
@@ -348,6 +355,7 @@ def generate(profile: dict, identified: dict, episodes: int, seed: int,
         kind = "sine" if rng.random() < 0.2 else ("ramp" if rng.random() < 0.45 else "steps")
         targets = make_targets(rng, steps, controller.v_max_nom, kind)
         rail, valid = rail_schedule(rng, steps)
+        available = motor_available_mask(valid)
         all_targets[ep] = targets.astype(np.float32)
         all_rail[ep] = rail.astype(np.float32)
         all_valid[ep] = valid
@@ -363,6 +371,19 @@ def generate(profile: dict, identified: dict, episodes: int, seed: int,
         }
         for i in range(steps):
             v = plant.v
+            if not available[i]:
+                # C Safety latches UNDERVOLT on a missing/invalid rail sample;
+                # the motor controller is disabled and its state is cleared.
+                controller.reset()
+                rec["v"][i] = v
+                rec["prev_pwm"][i] = 0.0
+                rec["integ0"][i] = 0.0
+                rec["u_pi"][i] = 0.0
+                rec["u_unsat"][i] = 0.0
+                rec["e_acc"][i] = 0.0
+                plant.step(0.0, float(rail[i]))
+                continue
+
             prev_pwm = controller.applied_pwm
             rail_v = float(rail[i])
             v_max_eff = controller.v_max_eff(rail_v)
@@ -395,11 +416,13 @@ def generate(profile: dict, identified: dict, episodes: int, seed: int,
         xs.append(x_ep)
         ts.append(t_ep)
         eps.append(np.full(steps, ep, dtype=np.int32))
+        available_rows.append(available)
 
     return {
         "x": np.concatenate(xs),
         "t": np.concatenate(ts),
         "episode": np.concatenate(eps),
+        "available": np.concatenate(available_rows),
         "params": params,
         "targets": all_targets,
         "rail": all_rail,

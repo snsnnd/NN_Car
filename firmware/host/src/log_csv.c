@@ -8,7 +8,7 @@ static const char *k_header =
     "wheel_v_l_target,wheel_v_r_target,wheel_v_l,wheel_v_r,"
     "u_l,u_r,pwm_l,pwm_r,v_rail,v_rail_valid,"
     "safety_faults,safety_latched,safety_derate,safety_ramp,safety_stop,"
-    "x,y,theta,recovery_ms\n";
+    "x,y,theta,recovery_ms";
 
 int nncar_log_open(nncar_logger_t *lg, const char *path)
 {
@@ -28,6 +28,10 @@ void nncar_log_write_header(nncar_logger_t *lg)
 {
     if (lg->fp != NULL) {
         fputs(k_header, lg->fp);
+        for (int i = 0; i < NNCAR_MAX_SENSORS; ++i) {
+            fprintf(lg->fp, ",gray_value_%02d,gray_exist_%02d,gray_valid_%02d", i, i, i);
+        }
+        fputc('\n', lg->fp);
     }
 }
 
@@ -43,7 +47,7 @@ void nncar_log_write_row(nncar_logger_t *lg, const nncar_log_row_t *r)
             "%.6f,%.6f,%.6f,%.6f,"
             "%.6f,%.6f,%.6f,%.6f,%.6f,%d,"
             "%u,%d,%.6f,%.6f,%d,"
-            "%.6f,%.6f,%.6f,%.3f\n",
+            "%.6f,%.6f,%.6f,%.3f",
             (unsigned long long)r->t_us, r->mode, (double)r->line_conf,
             (double)r->line_centroid_m, r->line_found, r->valid_count,
             (double)r->v_target, (double)r->omega_target, (double)r->v_max_eff,
@@ -55,4 +59,10 @@ void nncar_log_write_row(nncar_logger_t *lg, const nncar_log_row_t *r)
             r->safety_faults, r->safety_latched, (double)r->safety_derate,
             (double)r->safety_ramp, r->safety_stop,
             (double)r->x, (double)r->y, (double)r->theta, (double)r->recovery_ms);
+
+    for (int i = 0; i < NNCAR_MAX_SENSORS; ++i) {
+        fprintf(lg->fp, ",%.6f,%u,%u", (double)r->gray_value[i],
+                (unsigned)r->gray_exist[i], (unsigned)r->gray_valid[i]);
+    }
+    fputc('\n', lg->fp);
 }

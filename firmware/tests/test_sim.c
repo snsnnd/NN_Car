@@ -1,6 +1,7 @@
 #include "nncar/safety.h"
 #include "nncar/sim.h"
 #include "nncar/sim_runner.h"
+#include "nncar/stack.h"
 
 #include "test_util.h"
 
@@ -54,6 +55,62 @@ int main(void)
            lowrail.fault_union);
     CHECK(lowrail.final_lat_m < 0.01f);
     CHECK((lowrail.fault_union & NNCAR_FAULT_UNDERVOLT) == 0u);
+
+    /* Sensor fault/noise draws are reproducible from an explicit seed. */
+    nncar_sim_t noisy_a;
+    nncar_sim_t noisy_b;
+    nncar_sim_init(&noisy_a, p, 0.0f, 0.0f, 0.0f, 12.0f);
+    nncar_sim_init(&noisy_b, p, 0.0f, 0.0f, 0.0f, 12.0f);
+    noisy_a.gray_noise_std = 0.08f;
+    noisy_b.gray_noise_std = 0.08f;
+    noisy_a.gray_offset = -0.05f;
+    noisy_b.gray_offset = -0.05f;
+    noisy_a.gray_valid_prob = 0.0f;
+    noisy_b.gray_valid_prob = 0.0f;
+    noisy_a.gray_gain[0] = 0.9f;
+    noisy_b.gray_gain[0] = 0.9f;
+    noisy_a.gray_missing[2] = 1u;
+    noisy_b.gray_missing[2] = 1u;
+    nncar_sim_seed(&noisy_a, 42u);
+    nncar_sim_seed(&noisy_b, 42u);
+
+    float gray_a[NNCAR_MAX_SENSORS];
+    float gray_b[NNCAR_MAX_SENSORS];
+    uint8_t exist_a[NNCAR_MAX_SENSORS];
+    uint8_t exist_b[NNCAR_MAX_SENSORS];
+    uint8_t valid_a[NNCAR_MAX_SENSORS];
+    uint8_t valid_b[NNCAR_MAX_SENSORS];
+    nncar_sim_read_gray(&noisy_a, p, gray_a, exist_a, valid_a);
+    nncar_sim_read_gray(&noisy_b, p, gray_b, exist_b, valid_b);
+    for (int i = 0; i < NNCAR_MAX_SENSORS; ++i) {
+        CHECK(gray_a[i] == gray_b[i]);
+        CHECK(exist_a[i] == exist_b[i]);
+        CHECK(valid_a[i] == valid_b[i]);
+        CHECK(valid_a[i] == 0u);
+        if (i >= p->sensor_count || i == 2) {
+            CHECK(exist_a[i] == 0u);
+            CHECK(gray_a[i] == 0.0f);
+        } else {
+            CHECK(exist_a[i] == 1u);
+        }
+    }
+
+    /* RL policy hook replaces line output while retaining the C stack contract. */
+    nncar_stack_t policy_stack;
+    nncar_stack_init(&policy_stack, p);
+    nncar_stack_input_t policy_input = {0};
+    policy_input.v_desired = 0.9f;
+    policy_input.v_rail = p->rail_nominal_v;
+    policy_input.v_rail_valid = true;
+    policy_input.v_rail_exist = true;
+    policy_input.actual_valid = true;
+    policy_input.comm_ok = true;
+    float policy_action[2] = {1.0f, 0.2f};
+    nncar_stack_output_t policy_out = nncar_stack_step_action(
+        &policy_stack, p, &policy_input, gray_a, exist_a, valid_a,
+        policy_action, p->line_dt_s);
+    CHECK_NEAR(policy_out.twist.v, 0.9f, 1.0e-5f);
+    CHECK_NEAR(policy_out.twist.omega, 1.08f, 1.0e-4f);
 
     TEST_END();
 }

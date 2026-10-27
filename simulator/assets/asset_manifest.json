@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0.0",
+  "assets": [
+    {
+      "id": "nncar_vehicle",
+      "runtime_file": "nncar_vehicle.glb",
+      "source_file": "../../assets_source/nncar_vehicle.blend",
+      "generator": "build_vehicle.py",
+      "profile_source": "../../configs/vehicle_default.json",
+      "units": "meters",
+      "pivot": "ground projection of drive axle midpoint",
+      "forward_axis_godot": "-Z",
+      "status": "visual blockout, not a collision or dynamics model",
+      "provenance": "Procedurally authored in Blender for this repository; no third-party mesh or texture used.",
+      "visual_assumptions": [
+        "chassis length 0.19 m",
+        "wheel width 0.018 m",
+        "sensor package height 0.0085 m",
+        "passive rear caster radius 0.009 m"
+      ]
+    }
+  ]
+}

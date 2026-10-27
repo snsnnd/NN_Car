@@ -10,6 +10,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import numpy as np
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
@@ -18,6 +20,8 @@ import gen_motor_nn  # noqa: E402
 import gen_profile  # noqa: E402
 import golden  # noqa: E402
 import identify_motor  # noqa: E402
+import motor_teacher  # noqa: E402
+import train_motor_nn  # noqa: E402
 import validate_log  # noqa: E402
 
 ROOT = HERE.parents[1]
@@ -298,6 +302,25 @@ def test_motor_nn_generation(tmp: Path) -> None:
         pass
 
 
+def test_motor_training_splits() -> None:
+    episode_ids = np.arange(240)
+    train_eps, val_eps, test_eps = train_motor_nn.split_episodes(episode_ids, seed=23)
+    train_set, val_set, test_set = map(set, (train_eps, val_eps, test_eps))
+    check((len(train_set), len(val_set), len(test_set)) == (192, 24, 24),
+          "motor train: expected deterministic 80/10/10 episode split")
+    check(not (train_set & val_set or train_set & test_set or val_set & test_set),
+          "motor train: episode splits overlap")
+    check(train_set | val_set | test_set == set(episode_ids),
+          "motor train: episode split omitted IDs")
+    again = train_motor_nn.split_episodes(episode_ids, seed=23)
+    check(all(np.array_equal(a, b) for a, b in zip((train_eps, val_eps, test_eps), again)),
+          "motor train: episode split is not reproducible")
+
+    availability = motor_teacher.motor_available_mask(np.array([1, 1, 0, 1, 1]))
+    check(np.array_equal(availability, np.array([True, True, False, False, False])),
+          "motor teacher: invalid rail must latch the C Safety stop")
+
+
 def test_line_nn_generation(tmp: Path) -> None:
     doc, weights = gen_line_nn.load_weights(LINE_WEIGHTS)
     text = gen_line_nn.render(doc, weights, str(LINE_WEIGHTS))
@@ -332,6 +355,7 @@ def main() -> int:
         tmp = Path(tmpdir)
         test_profile_generation(tmp)
         test_motor_nn_generation(tmp)
+        test_motor_training_splits()
         test_line_nn_generation(tmp)
         test_validation(tmp)
         test_golden(tmp)

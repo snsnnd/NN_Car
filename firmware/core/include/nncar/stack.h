@@ -71,9 +71,23 @@ void nncar_stack_set_line_ctrl(nncar_stack_t *st, nncar_line_ctrl_t ctrl,
 nncar_stack_output_t nncar_stack_step(nncar_stack_t *st,
                                       const nncar_profile_t *p,
                                       const nncar_stack_input_t *in,
-                                      const float gray_value[NNCAR_MAX_SENSORS],
+                                      const float *gray_value, /* NNCAR_MAX_SENSORS samples */
                                       const uint8_t gray_exist[NNCAR_MAX_SENSORS],
                                       const uint8_t gray_valid[NNCAR_MAX_SENSORS],
                                       float dt_s);
+
+/*
+ * Host/RL policy hook. action[0:2] are normalized to [-1, 1]: speed scale and
+ * curvature. The existing mixer, safety layer, motor controllers and plant
+ * remain in the C stack; this only replaces the line-policy output.
+ */
+nncar_stack_output_t nncar_stack_step_action(nncar_stack_t *st,
+                                             const nncar_profile_t *p,
+                                             const nncar_stack_input_t *in,
+                                             const float *gray_value,
+                                             const uint8_t gray_exist[NNCAR_MAX_SENSORS],
+                                             const uint8_t gray_valid[NNCAR_MAX_SENSORS],
+                                             const float action[2],
+                                             float dt_s);
 
 #endif

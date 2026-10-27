@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Train the residual motor MLP from teacher data (numpy only).
 
-The network shape is frozen by motor.h: 7 -> 32 -> 16 -> 8 -> 1 (929
+The network shape is frozen by motor.h: 8 -> 32 -> 16 -> 8 -> 1 (961
 parameters, ReLU hidden layers, tanh output).  The student output is the
 tanh argument t, and the residual is ``u_nn = alpha * t``.
 
@@ -16,6 +16,9 @@ between the PI+FF state distribution and the student's own.  Two rounds is the
 accepted recipe: it lifts the nominal improvement from 10.2% to 12.2%.
 
 Training is deterministic: fixed seeds, fixed split, seeded shuffling.
+
+Checkpoint selection uses a validation split. The reported randomised-episode
+gate uses a separate test split that is never used for training or selection.
 
 Acceptance gate (declared before looking at the result):
 
@@ -44,6 +47,19 @@ import motor_teacher as mt
 
 HIDDEN = (32, 16, 8)
 GATE = 0.10
+
+
+def split_episodes(episode_ids: np.ndarray, seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return deterministic disjoint train/validation/test episode IDs."""
+    ids = np.unique(np.asarray(episode_ids, dtype=np.int64))
+    if ids.size < 4:
+        raise ValueError("at least 4 episodes are required for train/validation/test splits")
+    order = np.random.default_rng(seed).permutation(ids)
+    train_count = min(max(int(round(ids.size * 0.8)), 1), ids.size - 2)
+    val_count = min(max(int(round(ids.size * 0.1)), 1), ids.size - train_count - 1)
+    return (order[:train_count],
+            order[train_count:train_count + val_count],
+            order[train_count + val_count:])
 
 
 def init_net(rng: np.random.Generator) -> dict[str, np.ndarray]:
@@ -140,19 +156,25 @@ def rollout(profile: dict, plant_params: np.ndarray, targets: np.ndarray,
 
     total = 0.0
     count = 0
+    available = mt.motor_available_mask(valid)
     for i in range(targets.shape[0]):
         v = plant.v
         rail_v = float(rail[i])
         v_max_eff = ctrl.v_max_eff(rail_v)
-        rail_ratio = (rail_v / ctrl.rail_nom) if valid[i] else 1.0
-
-        _, _, pwm = ctrl.step(float(targets[i]), v, v_max_eff,
-                              residual_fn=residual_fn,
-                              rail_ratio=rail_ratio, rail_valid=bool(valid[i]))
+        if available[i]:
+            rail_ratio = rail_v / ctrl.rail_nom
+            _, _, pwm = ctrl.step(float(targets[i]), v, v_max_eff,
+                                  residual_fn=residual_fn,
+                                  rail_ratio=rail_ratio, rail_valid=True)
+        else:
+            # Match stack.c: a rail fault is latched by Safety and motor_step()
+            # is called disabled, clearing PI and temporal state until reset.
+            ctrl.reset()
+            pwm = 0.0
 
         plant.step(pwm, rail_v)
 
-        if i >= 25:
+        if i >= 25 and available[i]:
             err = float(targets[i]) - plant.v
             total += err * err
             count += 1
@@ -169,15 +191,18 @@ def evaluate(profile: dict, data: dict, held_out: list[int],
 
     rms_ff = []
     rms_nn = []
+    active_fractions = []
     for ep in held_out:
         rms_ff.append(rollout(profile, params[ep], targets[ep], rail[ep], valid[ep], None))
         rms_nn.append(rollout(profile, params[ep], targets[ep], rail[ep], valid[ep], net))
+        active_fractions.append(float(np.mean(mt.motor_available_mask(valid[ep]))))
 
     rms_ff_a = float(np.sqrt(np.mean(np.square(rms_ff))))
     rms_nn_a = float(np.sqrt(np.mean(np.square(rms_nn))))
 
     return {"rms_ff": rms_ff_a, "rms_nn": rms_nn_a,
-            "improvement": 1.0 - rms_nn_a / rms_ff_a}
+            "improvement": 1.0 - rms_nn_a / rms_ff_a,
+            "active_fraction": float(np.mean(active_fractions))}
 
 
 def nominal(profile: dict, net: dict) -> dict:
@@ -212,24 +237,30 @@ def rollout_direct(profile: dict, plant_params: np.ndarray, targets: np.ndarray,
     total = 0.0
     count = 0
     e_acc = 0.0
+    available = mt.motor_available_mask(valid)
     for i in range(targets.shape[0]):
         v = plant.v
         rail_v = float(rail[i])
-        rail_ratio = (rail_v / ctrl.rail_nom) if valid[i] else 1.0
-        prev_pwm = ctrl.applied_pwm
+        if available[i]:
+            rail_ratio = rail_v / ctrl.rail_nom
+            prev_pwm = ctrl.applied_pwm
 
-        err = float(targets[i]) - v
-        e_acc = float(np.clip(e_acc + err * mt.DT_S, -ctrl.i_limit, ctrl.i_limit))
+            err = float(targets[i]) - v
+            e_acc = float(np.clip(e_acc + err * mt.DT_S, -ctrl.i_limit, ctrl.i_limit))
 
-        x = mt.features(ctrl.v_max_nom, ctrl.scale_min, ctrl.scale_max,
-                        float(targets[i]), v, prev_pwm, 0.0, rail_ratio,
-                        bool(valid[i]), float(np.clip(e_acc / ctrl.i_limit, -1.0, 1.0)))
-        u = float(mt.forward(net, x)[0])
-        pwm = ctrl.compensate(float(np.clip(u, -1.0, 1.0)))
-        ctrl.applied_pwm = pwm
+            x = mt.features(ctrl.v_max_nom, ctrl.scale_min, ctrl.scale_max,
+                            float(targets[i]), v, prev_pwm, 0.0, rail_ratio,
+                            True, float(np.clip(e_acc / ctrl.i_limit, -1.0, 1.0)))
+            u = float(mt.forward(net, x)[0])
+            pwm = ctrl.compensate(float(np.clip(u, -1.0, 1.0)))
+            ctrl.applied_pwm = pwm
+        else:
+            ctrl.reset()
+            e_acc = 0.0
+            pwm = 0.0
         plant.step(pwm, rail_v)
 
-        if i >= 25:
+        if i >= 25 and available[i]:
             err = float(targets[i]) - plant.v
             total += err * err
             count += 1
@@ -246,16 +277,19 @@ def evaluate_direct(profile: dict, data: dict, held_out: list[int],
 
     rms_ff = []
     rms_nn = []
+    active_fractions = []
     for ep in held_out:
         rms_ff.append(rollout(profile, params[ep], targets[ep], rail[ep], valid[ep], None))
         rms_nn.append(rollout_direct(profile, params[ep], targets[ep], rail[ep],
                                      valid[ep], net))
+        active_fractions.append(float(np.mean(mt.motor_available_mask(valid[ep]))))
 
     rms_ff_a = float(np.sqrt(np.mean(np.square(rms_ff))))
     rms_nn_a = float(np.sqrt(np.mean(np.square(rms_nn))))
 
     return {"rms_ff": rms_ff_a, "rms_nn": rms_nn_a,
-            "improvement": 1.0 - rms_nn_a / rms_ff_a}
+            "improvement": 1.0 - rms_nn_a / rms_ff_a,
+            "active_fraction": float(np.mean(active_fractions))}
 
 
 def nominal_direct(profile: dict, net: dict) -> dict:
@@ -287,6 +321,7 @@ def export_json(path: Path, net: dict, profile: dict, meta: dict) -> None:
         "epochs": meta["epochs"],
         "dagger": meta["dagger"],
         "samples": meta["samples"],
+        "episode_split": meta["episode_split"],
         "metrics": meta["metrics"],
         "weights": {k: net[k].astype(np.float32).ravel().tolist()
                     for k in ("w1", "b1", "w2", "b2", "w3", "b3", "w4", "b4")},
@@ -329,14 +364,22 @@ def main(argv: list[str]) -> int:
         print(f"train_motor_nn: {exc}", file=sys.stderr)
         return 2
 
-    episodes = int(data["episode"].max()) + 1
-    rng = np.random.default_rng(args.seed)
-    order = rng.permutation(episodes)
-    split = int(round(episodes * 0.8))
-    held_out = [int(e) for e in order[split:]]
+    episode_ids = np.unique(data["episode"])
+    episodes = len(episode_ids)
+    if "available" in data:
+        available = data["available"].astype(bool)
+    else:
+        available = np.concatenate([
+            mt.motor_available_mask(ep_valid) for ep_valid in data["valid"]
+        ])
+    if episodes < 4:
+        print("train_motor_nn: at least 4 episodes are required for train/validation/test splits",
+              file=sys.stderr)
+        return 2
+    train_eps, val_eps, test_eps = split_episodes(episode_ids, args.seed)
 
-    mask = np.isin(data["episode"], [int(e) for e in order[:split]])
-    val_mask = np.isin(data["episode"], held_out)
+    mask = np.isin(data["episode"], train_eps) & available
+    val_mask = np.isin(data["episode"], val_eps) & available
 
     if args.direct:
         # A standalone policy never sees the PI state, so x[3] is pinned to 0
@@ -367,8 +410,9 @@ def main(argv: list[str]) -> int:
         extra = mt.generate(profile, identified, args.dagger_episodes,
                             seed=1000 + it, duration_s=2.0,
                             residual_fn=residual_fn)
-        x = np.concatenate([x, extra["x"]])
-        t = np.concatenate([t, extra["t"]])
+        extra_available = extra["available"].astype(bool)
+        x = np.concatenate([x, extra["x"][extra_available]])
+        t = np.concatenate([t, extra["t"][extra_available]])
         net = init_net(np.random.default_rng(args.seed + it + 1))
         net = train(net, x, t, x_val, t_val, args.epochs, args.seed + it + 1)
 
@@ -377,18 +421,19 @@ def main(argv: list[str]) -> int:
     r2 = 1.0 - val_mse / zero_mse
 
     if args.direct:
-        closed = evaluate_direct(profile, data, held_out, net)
+        closed = evaluate_direct(profile, data, test_eps.tolist(), net)
         nom = nominal_direct(profile, net)
     else:
-        closed = evaluate(profile, data, held_out, net)
+        closed = evaluate(profile, data, test_eps.tolist(), net)
         nom = nominal(profile, net)
 
     metrics = {
         "val_mse": val_mse,
         "val_r2": r2,
-        "heldout_rms_ff": closed["rms_ff"],
-        "heldout_rms_nn": closed["rms_nn"],
-        "heldout_improvement": closed["improvement"],
+        "test_rms_ff": closed["rms_ff"],
+        "test_rms_nn": closed["rms_nn"],
+        "test_improvement": closed["improvement"],
+        "test_active_fraction": closed["active_fraction"],
         "nominal_rms_ff": nom["pi_ff"],
         "nominal_rms_nn": nom["direct"] if args.direct else nom["residual"],
         "nominal_improvement": nom["improvement"],
@@ -396,12 +441,14 @@ def main(argv: list[str]) -> int:
 
     if not args.quiet:
         label = "direct" if args.direct else "residual"
-        print(f"train_motor_nn: train={x.shape[0]} val={x_val.shape[0]} "
-              f"samples, epochs={args.epochs}, dagger={dagger_rounds}")
+        print(f"train_motor_nn: episodes train/val/test={len(train_eps)}/"
+              f"{len(val_eps)}/{len(test_eps)}, usable samples train/val="
+              f"{x.shape[0]}/{x_val.shape[0]}, epochs={args.epochs}, dagger={dagger_rounds}")
         print(f"  teacher fit: val MSE={val_mse:.5f} (zero={zero_mse:.5f}) R2={r2:.4f}")
-        print(f"  held-out closed loop: PI+FF={closed['rms_ff']:.5f} "
+        print(f"  independent test: PI+FF={closed['rms_ff']:.5f} "
               f"{label}={closed['rms_nn']:.5f} "
-              f"({closed['improvement'] * 100.0:+.1f}%)")
+              f"({closed['improvement'] * 100.0:+.1f}%), "
+              f"policy-active={closed['active_fraction'] * 100.0:.1f}%")
         print(f"  nominal closed loop: PI+FF={nom['pi_ff']:.5f} "
               f"{label}={metrics['nominal_rms_nn']:.5f} "
               f"({nom['improvement'] * 100.0:+.1f}%)")
@@ -409,7 +456,11 @@ def main(argv: list[str]) -> int:
     export_json(Path(args.out_json), net, profile,
                 {"seed": args.seed, "epochs": args.epochs,
                  "dagger": dagger_rounds, "samples": int(x.shape[0]),
-                 "direct": args.direct, "metrics": metrics})
+                 "direct": args.direct,
+                 "episode_split": {"train": len(train_eps),
+                                   "validation": len(val_eps),
+                                   "test": len(test_eps)},
+                 "metrics": metrics})
 
     passed = closed["improvement"] >= GATE and nom["improvement"] >= GATE
 

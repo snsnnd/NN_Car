@@ -1,3 +1,7 @@
 build/
+.venv/
 __pycache__/
 *.pyc
+simulator/.godot/
+simulator/runs/
+assets_source/*.blend1

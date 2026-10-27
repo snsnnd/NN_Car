@@ -39,7 +39,7 @@ typedef enum {
     NNCAR_MOTOR_MODE_NN_DIRECT = 3
 } nncar_motor_mode_t;
 
-/* 7 -> 32 -> 16 -> 8 -> 1, 929 parameters, FP32. */
+/* 8 -> 32 -> 16 -> 8 -> 1, 961 parameters, FP32. */
 typedef struct {
     float w1[NNCAR_MOTOR_H1][NNCAR_MOTOR_INPUT_DIM];
     float b1[NNCAR_MOTOR_H1];

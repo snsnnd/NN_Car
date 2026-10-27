@@ -2,7 +2,7 @@
 
 ## 1. 职责
 
-MotorController 是低层单轮闭环模块：让电机实际速度跟踪上层给出的目标速度。左右轮使用相同拓扑但不同权重。
+MotorController 是低层单轮闭环模块：让电机实际速度跟踪上层给出的目标速度。左右轮使用相同拓扑；当前 C stack 的一个 `nn` 指针由左右通道共享，尚未接入独立左右权重。
 
 ```text
 TargetSpeed + MotorObservation -> MotorController -> PWM
@@ -48,30 +48,22 @@ PI、PID 和 NN 必须使用完全相同的速度估计结果。低速时不能�
 
 ## 3. 输入输出张量
 
-MVP 使用 6 维核心/电池输入。actual speed 的 exist/valid 属于 wrapper health interface，不进入正常 NN 输入：
+当前 R3 实现使用 8 维 residual 输入：
 
 ```text
-x_motor_mvp = [
-  target_speed_norm, actual_speed_norm,
-  previous_applied_pwm_norm,
-  battery_voltage_norm, battery_voltage_exist, battery_voltage_valid
+x_motor = [
+  target_speed_norm, actual_speed_norm, previous_applied_pwm_norm,
+  u_pi_norm, rail_voltage_norm, rail_exist, rail_valid, e_acc_norm
 ]
 ```
 
-完整输入固定为 30 维：先放上述 3 个连续核心字段，再按以下顺序追加每个 optional 字段的 value、exist、valid：
+`u_pi_norm` 保留 residual 基线；`e_acc_norm` 是压缩的误差历史。固件 Safety 对无效/缺失母线读数会锁存停机，因此此类状态由 Safety 处理，不由 NN 学习恢复。
+
+输出为 `float32[1]`，在 residual 模式下表示归一化修正：
 
 ```text
-battery_voltage, motor_current, motor_temperature,
-driver_temperature, acceleration, wheel_acceleration,
-bus_voltage, bus_current, load_estimate
-```
-
-硬件配置只改变 mask，不改变网络维度。
-
-输出为 `float32[1]`：
-
-```text
-y_motor = [pwm_norm]    # [-1, 1]
+y_motor = [delta_norm]  # tanh output in [-1, 1]
+u_nn = alpha * delta_norm
 ```
 
 方向和 duty 映射由 Actuator Adapter 完成。
@@ -79,13 +71,13 @@ y_motor = [pwm_norm]    # [-1, 1]
 ## 4. MLP baseline
 
 ```text
-6 -> Linear(32) + ReLU
+8 -> Linear(32) + ReLU
   -> Linear(16) + ReLU
   -> Linear(8)  + ReLU
   -> Linear(1)  + tanh
 ```
 
-MVP 参数量为 `897`。左、右电机分别加载一份权重，允许 `θ_L != θ_R`。
+当前参数量为 `961`。Motor residual 默认锚定 PI+FF；单独输出 PWM 的 `NN_DIRECT` 仅作对照，不是默认控制器。当前共享网络尚未用独立左右电机闭环评估。
 
 ## 5. Temporal Model 版本
 

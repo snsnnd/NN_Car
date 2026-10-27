@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_COLUMNS 64
+#define MAX_COLUMNS 128
 #define LINE_MAX_LEN 4096
 
 typedef struct {

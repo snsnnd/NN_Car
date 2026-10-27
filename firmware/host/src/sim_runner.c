@@ -130,6 +130,11 @@ nncar_sim_run_result_t nncar_sim_run(const nncar_profile_t *p,
             row.y = sim->y;
             row.theta = sim->theta;
             row.recovery_ms = out.recovery_ms;
+            for (int i = 0; i < NNCAR_MAX_SENSORS; ++i) {
+                row.gray_value[i] = gray_value[i];
+                row.gray_exist[i] = gray_exist[i];
+                row.gray_valid[i] = gray_valid[i];
+            }
             on_row(ctx, &row);
         }
 

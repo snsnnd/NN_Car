@@ -113,7 +113,14 @@ def render(doc: dict, weights: dict, source: str) -> str:
               else "nncar_motor_nn_trained")
     static_name = "g_motor_nn_direct" if direct else "g_motor_nn"
     metrics = doc["metrics"]
-    summary = (f"held-out {metrics['heldout_improvement'] * 100.0:+.1f}%"
+    improvement = metrics.get("test_improvement")
+    metric_label = "test"
+    if improvement is None:
+        improvement = metrics.get("heldout_improvement")
+        metric_label = "held-out"
+    if improvement is None:
+        raise ValueError("metrics missing test_improvement/heldout_improvement")
+    summary = (f"{metric_label} {improvement * 100.0:+.1f}%"
                f", nominal {metrics['nominal_improvement'] * 100.0:+.1f}%")
 
     lines = [
