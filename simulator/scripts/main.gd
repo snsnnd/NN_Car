@@ -132,6 +132,8 @@ var live_control_dt_s := 0.01
 var live_duration_s := 60.0
 var live_profile_verified := false
 var live_scenario: Dictionary = {}
+var live_controller := "unknown"
+var live_pending_controller := ""
 var live_last_state_ms := 0
 var live_last_chart_ms := 0
 
@@ -164,6 +166,8 @@ var run_sub_label: Label
 var status_pill: PanelContainer
 var status_dot: Panel
 var status_text: Label
+var controller_chip: PanelContainer
+var controller_chip_label: Label
 var profile_chip: PanelContainer
 var profile_chip_label: Label
 var rail_run_title: Label
@@ -190,6 +194,7 @@ var reset_button: Button
 var step_back_button: Button
 var step_forward_button: Button
 var live_button: Button
+var controller_option: OptionButton
 var save_button: Button
 var chart_button: Button
 var map_button: Button
@@ -386,6 +391,14 @@ func _build_top_bar() -> Control:
 	status_text = Ui.mono_label("未连接", 10, Ui.MUTED)
 	status_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	status_row.add_child(status_text)
+
+	controller_chip = PanelContainer.new()
+	controller_chip.add_theme_stylebox_override("panel", _status_style(Ui.MUTED))
+	controller_chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(controller_chip)
+	controller_chip_label = Ui.mono_label("寻迹 · 未连接", 10, Ui.MUTED)
+	controller_chip_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	controller_chip.add_child(controller_chip_label)
 
 	profile_chip = PanelContainer.new()
 	profile_chip.add_theme_stylebox_override("panel", Ui.flat(Color(Ui.ACCENT, 0.08),
@@ -794,6 +807,21 @@ func _build_dock() -> PanelContainer:
 	live_button.tooltip_text = "连接 C 固定步长仿真服务（L）"
 	live_button.pressed.connect(_on_live_button)
 	transport.add_child(live_button)
+
+	controller_option = OptionButton.new()
+	controller_option.custom_minimum_size = Vector2(138, 34)
+	controller_option.add_theme_font_size_override("font_size", Ui.scaled_font_size(10))
+	controller_option.add_item("PID", 0)
+	controller_option.set_item_metadata(0, "pid")
+	controller_option.add_item("FP32 MLP", 1)
+	controller_option.set_item_metadata(1, "mlp")
+	controller_option.add_item("int8 MLP", 2)
+	controller_option.set_item_metadata(2, "int8")
+	controller_option.select(0)
+	controller_option.disabled = true
+	controller_option.tooltip_text = "切换 C 端寻迹控制器；切换后会重置运行"
+	controller_option.item_selected.connect(_on_live_controller_selected)
+	transport.add_child(controller_option)
 
 	save_button = Ui.button("保存", "ghost", 34.0)
 	save_button.custom_minimum_size.x = 58
@@ -1586,6 +1614,71 @@ func _update_status(kind: String, detail: String) -> void:
 	status_text.add_theme_color_override("font_color", Ui.TEXT_DIM if kind != "offline" else Ui.MUTED)
 	status_dot.add_theme_stylebox_override("panel", Ui.flat(color, color, 4, 0))
 	status_pill.add_theme_stylebox_override("panel", _status_style(color))
+	_update_controller_controls()
+
+
+func _controller_name(controller: String) -> String:
+	match controller:
+		"pid":
+			return "PID"
+		"mlp":
+			return "FP32 MLP"
+		"int8":
+			return "int8 MLP"
+		_:
+			return "未连接"
+
+
+func _controller_index(controller: String) -> int:
+	match controller:
+		"mlp":
+			return 1
+		"int8":
+			return 2
+		_:
+			return 0
+
+
+func _update_controller_controls() -> void:
+	if not is_instance_valid(controller_chip_label):
+		return
+	var color := Ui.MUTED
+	if not live_mode or live_controller == "unknown":
+		controller_chip_label.text = "寻迹 · 未连接"
+		controller_chip.tooltip_text = "连接实时 C 仿真后显示实际生效的寻迹控制器"
+	else:
+		color = Ui.ACCENT
+		controller_chip_label.text = "寻迹 · %s" % _controller_name(live_controller)
+		controller_chip.tooltip_text = "C 仿真确认的当前寻迹控制器：%s" % _controller_name(live_controller)
+		if not live_pending_controller.is_empty():
+			controller_chip_label.text = "切换 · %s→%s" % [
+				_controller_name(live_controller), _controller_name(live_pending_controller)]
+			controller_chip.tooltip_text = "等待 C 仿真确认切换到 %s；确认前仍以 %s 为准" % [
+				_controller_name(live_pending_controller), _controller_name(live_controller)]
+	controller_chip_label.add_theme_color_override("font_color", color)
+	controller_chip.add_theme_stylebox_override("panel", _status_style(color))
+	if is_instance_valid(controller_option):
+		var selected_controller := live_pending_controller if not live_pending_controller.is_empty() \
+			else live_controller
+		controller_option.select(_controller_index(selected_controller))
+		controller_option.disabled = not live_mode or not live_ready or \
+			live_request_pending or not live_pending_controller.is_empty()
+
+
+func _on_live_controller_selected(index: int) -> void:
+	if not is_instance_valid(controller_option):
+		return
+	var requested := str(controller_option.get_item_metadata(index))
+	if not live_mode or not live_ready or requested == live_controller:
+		_update_controller_controls()
+		return
+	if not _queue_live_command("CTRL " + requested, "controller"):
+		_update_controller_controls()
+		return
+	live_pending_controller = requested
+	_update_playback_buttons()
+	_update_controller_controls()
+	_notify("正在等待当前步完成，并由 C 仿真切换到 %s。" % _controller_name(requested), "info")
 
 
 func _status_style(color: Color) -> StyleBoxFlat:
@@ -1929,6 +2022,7 @@ func _update_playback_buttons() -> void:
 	else:
 		live_button.remove_theme_stylebox_override("normal")
 		live_button.remove_theme_color_override("font_color")
+	_update_controller_controls()
 
 
 func _duration_s() -> float:
@@ -2921,6 +3015,8 @@ func _connect_live(port: int = DEFAULT_LIVE_PORT) -> void:
 	live_mode = true
 	live_ready = false
 	live_running = false
+	live_controller = "unknown"
+	live_pending_controller = ""
 	live_rx_buffer = ""
 	live_request_pending = false
 	live_pending_kind = ""
@@ -2962,6 +3058,8 @@ func _disconnect_live(send_close: bool) -> void:
 	live_mode = false
 	live_ready = false
 	live_running = false
+	live_controller = "unknown"
+	live_pending_controller = ""
 	live_request_pending = false
 	live_pending_kind = ""
 	live_deferred_command = ""
@@ -2976,6 +3074,7 @@ func _disconnect_live(send_close: bool) -> void:
 	live_pending_payload.clear()
 	live_outstanding_steps = 0
 	if was_live:
+		_update_controller_controls()
 		is_playing = false
 		if trace.is_empty():
 			_refresh_run_identity()
@@ -3152,6 +3251,10 @@ func _handle_live_message(message: Dictionary) -> void:
 			live_pending_payload.clear()
 		live_profile_verified = bool(message.get("profile_verified", false))
 		profile_verified = live_profile_verified
+		var reported_controller := str(message.get("controller", "pid"))
+		live_controller = reported_controller if reported_controller in ["pid", "mlp", "int8"] \
+			else "unknown"
+		live_pending_controller = ""
 		line_dt_s = float(message.get("line_dt_s", 0.01))
 		motor_dt_s = float(message.get("motor_dt_s", 0.002))
 		live_control_dt_s = maxf(line_dt_s, 0.001)
@@ -3173,6 +3276,7 @@ func _handle_live_message(message: Dictionary) -> void:
 		_refresh_run_identity()
 		_refresh_empty_state()
 		_update_status("connecting", "握手成功")
+		_update_controller_controls()
 		if not sync_selected_map:
 			if map_change_ready:
 				_notify("C 仿真已同步新地图，正在重置运行。", "ok")
@@ -3182,6 +3286,15 @@ func _handle_live_message(message: Dictionary) -> void:
 		var completed_kind := live_pending_kind
 		live_request_pending = false
 		live_pending_kind = ""
+		var reported_controller := str(message.get("controller", live_controller))
+		if reported_controller in ["pid", "mlp", "int8"]:
+			live_controller = reported_controller
+		var requested_controller := live_pending_controller
+		if completed_kind == "controller":
+			live_pending_controller = ""
+			if live_controller != requested_controller:
+				_notify("C 仿真确认的控制器是 %s，与请求不一致。" %
+					_controller_name(live_controller), "error")
 		if completed_kind == "parameters" and not live_pending_scenario.is_empty():
 			live_scenario = live_pending_scenario.duplicate(true)
 			run_scenario = live_scenario.duplicate(true)
@@ -3216,11 +3329,20 @@ func _handle_live_message(message: Dictionary) -> void:
 		_refresh_empty_state()
 		_update_status("live", "%d Hz" % int(round(1.0 / maxf(live_control_dt_s, 0.0001))))
 		_update_playback_buttons()
+		_update_controller_controls()
 		if completed_kind == "parameters":
 			_notify("参数已同步到 C 仿真，运行已从起点重启。", "ok")
 		elif completed_kind == "map_reset":
 			_notify("新地图已生效，实时运行已重置。", "ok")
+		elif completed_kind == "controller" and live_controller == requested_controller:
+			_notify("C 仿真已确认切换到 %s，运行已从起点重启。" %
+				_controller_name(live_controller), "ok")
 	elif event == "state":
+		var reported_controller := str(message.get("controller", live_controller))
+		if reported_controller in ["pid", "mlp", "int8"] and reported_controller != live_controller:
+			live_controller = reported_controller
+			live_pending_controller = ""
+			_update_controller_controls()
 		if live_outstanding_steps > 0:
 			live_outstanding_steps -= 1
 		var sample := _live_state_to_row(message)
@@ -3260,6 +3382,12 @@ func _handle_live_message(message: Dictionary) -> void:
 	elif event == "error":
 		live_request_pending = false
 		live_pending_kind = ""
+		live_deferred_command = ""
+		live_deferred_kind = ""
+		live_deferred_map_path = ""
+		live_deferred_map_json = ""
+		live_deferred_payload.clear()
+		live_pending_controller = ""
 		live_pending_scenario.clear()
 		live_pending_map_path = ""
 		live_pending_map_json = ""
@@ -3267,6 +3395,7 @@ func _handle_live_message(message: Dictionary) -> void:
 		live_running = false
 		_notify("C 仿真器错误：%s" % str(message.get("message", "协议错误")), "error")
 		_update_playback_buttons()
+		_update_controller_controls()
 
 
 func _live_state_to_row(message: Dictionary) -> Dictionary:

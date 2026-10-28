@@ -13,8 +13,16 @@ void nncar_sim_session_init(nncar_sim_session_t *session,
     session->cfg = cfg;
     session->total_ticks = (int)(cfg.duration_s / p->motor_dt_s + 0.5f);
     nncar_stack_init(&session->stack, p);
+    nncar_stack_set_drive_layout(&session->stack, sim->drive_layout);
     nncar_velocity_init(&session->velocity_left, p);
     nncar_velocity_init(&session->velocity_right, p);
+    for (int i = 0; i < NNCAR_WHEEL_COUNT; ++i) {
+        nncar_velocity_init(&session->velocity_wheel[i], p);
+        float radius = sim->wheel_radius[i];
+        if (radius > 1.0e-6f) {
+            session->velocity_wheel[i].counts_per_meter *= p->wheel_radius_m / radius;
+        }
+    }
 }
 
 bool nncar_sim_session_step(nncar_sim_session_t *session, nncar_log_row_t *row)
@@ -48,6 +56,12 @@ bool nncar_sim_session_step(nncar_sim_session_t *session, nncar_log_row_t *row)
     in.actual_left_mps = session->wheel_velocity_left;
     in.actual_right_mps = session->wheel_velocity_right;
     in.actual_valid = true;
+    if (sim->drive_layout == NNCAR_DRIVE_LAYOUT_SKID4) {
+        for (int i = 0; i < NNCAR_WHEEL_COUNT; ++i) {
+            in.actual_wheel_mps[i] = session->wheel_velocity[i];
+            in.actual_wheel_valid[i] = true;
+        }
+    }
     in.encoder_activity = encoder_activity;
     in.comm_ok = true;
     in.estop = false;
@@ -57,18 +71,45 @@ bool nncar_sim_session_step(nncar_sim_session_t *session, nncar_log_row_t *row)
     nncar_stack_output_t out = nncar_stack_step(&session->stack, p, &in,
                                                  gray_value, gray_exist,
                                                  gray_valid, dt);
-    nncar_sim_step(sim, p, out.pwm, dt);
+    int32_t dl = 0;
+    int32_t dr = 0;
+    if (sim->drive_layout == NNCAR_DRIVE_LAYOUT_SKID4) {
+        nncar_sim_step_skid4(sim, p, out.pwm_wheel, dt);
+        int32_t delta[NNCAR_WHEEL_COUNT];
+        session->edge_prev = false;
+        for (int i = 0; i < NNCAR_WHEEL_COUNT; ++i) {
+            float radius = sim->wheel_radius[i];
+            float wheel_cpm = cpm;
+            if (radius > 1.0e-6f) {
+                wheel_cpm *= p->wheel_radius_m / radius;
+            }
+            session->encoder_accum_wheel[i] +=
+                sim->wheel_omega[i] * radius * dt * wheel_cpm;
+            delta[i] = (int32_t)floorf(session->encoder_accum_wheel[i]);
+            session->encoder_accum_wheel[i] -= (float)delta[i];
+            session->wheel_velocity[i] = nncar_velocity_step(
+                &session->velocity_wheel[i], delta[i], dt);
+            session->edge_prev = session->edge_prev || (delta[i] != 0);
+        }
+        session->wheel_velocity_left = 0.5f * (
+            session->wheel_velocity[NNCAR_WHEEL_FRONT_LEFT] +
+            session->wheel_velocity[NNCAR_WHEEL_REAR_LEFT]);
+        session->wheel_velocity_right = 0.5f * (
+            session->wheel_velocity[NNCAR_WHEEL_FRONT_RIGHT] +
+            session->wheel_velocity[NNCAR_WHEEL_REAR_RIGHT]);
+    } else {
+        nncar_sim_step(sim, p, out.pwm, dt);
+        session->encoder_accum_left += sim->w_left * p->wheel_radius_m * dt * cpm;
+        session->encoder_accum_right += sim->w_right * p->wheel_radius_m * dt * cpm;
+        dl = (int32_t)floorf(session->encoder_accum_left);
+        dr = (int32_t)floorf(session->encoder_accum_right);
+        session->encoder_accum_left -= (float)dl;
+        session->encoder_accum_right -= (float)dr;
+        session->wheel_velocity_left = nncar_velocity_step(&session->velocity_left, dl, dt);
+        session->wheel_velocity_right = nncar_velocity_step(&session->velocity_right, dr, dt);
+        session->edge_prev = (dl != 0) || (dr != 0);
+    }
 
-    session->encoder_accum_left += sim->w_left * p->wheel_radius_m * dt * cpm;
-    session->encoder_accum_right += sim->w_right * p->wheel_radius_m * dt * cpm;
-    int32_t dl = (int32_t)floorf(session->encoder_accum_left);
-    int32_t dr = (int32_t)floorf(session->encoder_accum_right);
-    session->encoder_accum_left -= (float)dl;
-    session->encoder_accum_right -= (float)dr;
-    session->wheel_velocity_left = nncar_velocity_step(&session->velocity_left, dl, dt);
-    session->wheel_velocity_right = nncar_velocity_step(&session->velocity_right, dr, dt);
-
-    session->edge_prev = (dl != 0) || (dr != 0);
     if (session->edge_prev) {
         session->last_edge_us = session->now_us;
         session->have_edge = true;

@@ -81,6 +81,9 @@ void nncar_line_nn_input(const nncar_profile_t *p,
         x[32 + i] = (frame->valid[i] != 0u) ? 1.0f : 0.0f;
         x[48 + i] = nncar_clampf(p->sensor_position_m[i] / pos_ref, -1.0f, 1.0f);
     }
+    for (int i = 68; i < NNCAR_LINE_INPUT_DIM; ++i) {
+        x[i] = 0.0f;
+    }
 
     x[64] = nncar_clampf(p->sensor_to_axle_m / axle_ref, -1.0f, 1.0f);
     x[65] = nncar_clampf(v_desired / speed_ref, 0.0f, 1.0f);
@@ -106,6 +109,16 @@ void nncar_line_history_update(const nncar_profile_t *p,
     st->d_filtered += alpha * (de - st->d_filtered);
 
     st->history_centroid_m = st->has_prev ? st->prev_centroid_m : e;
+    if (st->has_prev) {
+        for (int i = NNCAR_LINE_HISTORY_TAPS - 1; i > 0; --i) {
+            st->centroid_history_m[i] = st->centroid_history_m[i - 1];
+        }
+        st->centroid_history_m[0] = st->prev_centroid_m;
+    } else {
+        for (int i = 0; i < NNCAR_LINE_HISTORY_TAPS; ++i) {
+            st->centroid_history_m[i] = e;
+        }
+    }
     st->prev_centroid_m = e;
     st->has_prev = true;
 }
@@ -290,14 +303,30 @@ static nncar_twist_t mlp_apply(const nncar_profile_t *p, const float y[2],
 static nncar_twist_t mlp_step(const nncar_profile_t *p,
                               const nncar_gray_frame_t *frame,
                               const nncar_line_estimate_t *est,
+                              const nncar_line_state_t *st,
                               float v_desired,
                               float v_max_eff,
                               const nncar_line_nn_t *nn)
 {
     float x[NNCAR_LINE_INPUT_DIM];
     float y[2];
+#if NNCAR_LINE_INPUT_DIM < 70
+    (void)st;
+#endif
 
     nncar_line_nn_input(p, frame, est, v_desired, x);
+#if NNCAR_LINE_INPUT_DIM == 70
+    const float pos_ref = fmaxf(p->position_ref_m, 1.0e-6f);
+    const float speed_ref = fmaxf(p->speed_ref_mps, 1.0e-6f);
+    x[68] = nncar_clampf(st->history_centroid_m / pos_ref, -1.0f, 1.0f);
+    x[69] = nncar_clampf(st->d_filtered / speed_ref, -1.0f, 1.0f);
+#elif NNCAR_LINE_INPUT_DIM >= 78
+    const float pos_ref = fmaxf(p->position_ref_m, 1.0e-6f);
+    for (int i = 0; i < NNCAR_LINE_HISTORY_TAPS; ++i) {
+        x[68 + i] = nncar_clampf(st->centroid_history_m[i] / pos_ref,
+                                 -1.0f, 1.0f);
+    }
+#endif
     nncar_line_nn_eval(nn, x, y);
 
     return mlp_apply(p, y, v_desired, v_max_eff);
@@ -383,7 +412,7 @@ nncar_twist_t nncar_line_step(const nncar_profile_t *p,
                           (frame != NULL) && (frame->value != NULL);
 
     if (use_direct) {
-        cmd = mlp_step(p, frame, est, v_desired, v_max_eff, st->nn);
+        cmd = mlp_step(p, frame, est, st, v_desired, v_max_eff, st->nn);
     } else if (use_residual) {
         cmd = residual_step(p, frame, est, st, v_desired, v_max_eff, st->nn);
     } else if (use_int8) {

@@ -68,10 +68,11 @@ def main() -> int:
 
         ready = json.loads(stream.readline())
         assert ready["event"] == "ready" and ready["protocol"] == 1
+        assert ready["controller"] == "pid"
         assert ready["scenario"]["amp_m"] == 0.08
         assert ready["map"]["name"] == "oval" and len(ready["map"]["segments"]) == 64
         reset = exchange("RESET 23 0.8 0 0 0.08 3.0 1.0")
-        assert reset["event"] == "reset"
+        assert reset["event"] == "reset" and reset["controller"] == "pid"
         first = exchange("STEP")
         assert first["event"] == "state"
         assert first["t_us"] == 8000
@@ -85,6 +86,20 @@ def main() -> int:
         repeated = exchange("STEP")
         assert first == repeated, "same seed/reset must reproduce the first state"
 
+        mlp_reset = exchange("CTRL mlp")
+        assert mlp_reset["event"] == "reset" and mlp_reset["controller"] == "mlp"
+        assert exchange("STEP")["controller"] == "mlp"
+        int8_reset = exchange("CTRL int8")
+        assert int8_reset["event"] == "reset" and int8_reset["controller"] == "int8"
+        assert exchange("STEP")["controller"] == "int8"
+        stream.write(b"CTRL residual\n")
+        invalid_controller = json.loads(stream.readline())
+        assert invalid_controller["event"] == "error"
+        assert exchange("HELLO")["controller"] == "int8"
+        pid_reset = exchange("CTRL pid")
+        assert pid_reset["event"] == "reset" and pid_reset["controller"] == "pid"
+        assert exchange("STEP")["controller"] == "pid"
+
         last = repeated
         while not last["done"]:
             last = exchange("STEP")
@@ -94,6 +109,7 @@ def main() -> int:
         assert parameter_reset["event"] == "reset"
         adjusted = exchange("STEP")
         assert adjusted["event"] == "state" and adjusted["t_us"] == 8000
+        assert exchange("CTRL mlp")["controller"] == "mlp"
 
         replacement_map = {
             "map_version": "1.0.0",
@@ -106,12 +122,13 @@ def main() -> int:
         }
         changed = exchange_map(replacement_map)
         assert changed["event"] == "ready"
+        assert changed["controller"] == "mlp"
         assert changed["map"]["name"] == "protocol_test"
         assert len(changed["map"]["segments"]) == 1
         assert changed["scenario"]["rail_v"] == 10.5
         assert changed["scenario"]["v_desired_mps"] == 0.5
         restarted = exchange("RESET")
-        assert restarted["event"] == "reset"
+        assert restarted["event"] == "reset" and restarted["controller"] == "mlp"
         assert exchange("STEP")["t_us"] == 8000
 
         map_error = exchange_map({})
@@ -126,6 +143,7 @@ def main() -> int:
         reconnected = json.loads(stream.readline())
         assert reconnected["event"] == "ready"
         assert reconnected["map"]["name"] == "protocol_test"
+        assert reconnected["controller"] == "mlp"
         stream.write(b"CLOSE\n")
         assert json.loads(stream.readline())["event"] == "closed"
         print("live simulator protocol: ok")

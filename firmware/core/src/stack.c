@@ -9,10 +9,25 @@ void nncar_stack_init(nncar_stack_t *st, const nncar_profile_t *p)
     nncar_line_set_ctrl(&st->line, NNCAR_LINE_CTRL_PID, NULL);
     nncar_motor_reset(&st->motor_l);
     nncar_motor_reset(&st->motor_r);
+    for (int i = 0; i < NNCAR_WHEEL_COUNT; ++i) {
+        nncar_motor_reset(&st->motor_wheel[i]);
+    }
     nncar_safety_reset(&st->safety);
     st->motor_cfg.mode = NNCAR_MOTOR_MODE_PI_FF;
     st->motor_cfg.nn = NULL;
+    st->drive_layout = NNCAR_DRIVE_LAYOUT_DIFF2;
     st->line_accum_s = p->line_dt_s;
+}
+
+void nncar_stack_set_drive_layout(nncar_stack_t *st,
+                                  nncar_drive_layout_t drive_layout)
+{
+    st->drive_layout = drive_layout;
+    nncar_motor_reset(&st->motor_l);
+    nncar_motor_reset(&st->motor_r);
+    for (int i = 0; i < NNCAR_WHEEL_COUNT; ++i) {
+        nncar_motor_reset(&st->motor_wheel[i]);
+    }
 }
 
 void nncar_stack_set_motor_mode(nncar_stack_t *st, nncar_motor_mode_t mode,
@@ -22,6 +37,9 @@ void nncar_stack_set_motor_mode(nncar_stack_t *st, nncar_motor_mode_t mode,
     st->motor_cfg.nn = nn;
     nncar_motor_reset(&st->motor_l);
     nncar_motor_reset(&st->motor_r);
+    for (int i = 0; i < NNCAR_WHEEL_COUNT; ++i) {
+        nncar_motor_reset(&st->motor_wheel[i]);
+    }
 }
 
 void nncar_stack_set_line_ctrl(nncar_stack_t *st, nncar_line_ctrl_t ctrl,
@@ -94,14 +112,40 @@ static nncar_stack_output_t stack_step(nncar_stack_t *st,
     sin.wheel_target_age_s = st->twist_age_s;
     sin.motor_cmd_age_s = 0.0f;
 
-    sin.actual_left.value = in->actual_left_mps;
+    float actual_left_mps = in->actual_left_mps;
+    float actual_right_mps = in->actual_right_mps;
+    bool actual_left_valid = in->actual_valid && nncar_finite(actual_left_mps);
+    bool actual_right_valid = in->actual_valid && nncar_finite(actual_right_mps);
+    float actual_wheel_mps[NNCAR_WHEEL_COUNT] = {0.0f};
+    bool actual_wheels_valid = true;
+    if (st->drive_layout == NNCAR_DRIVE_LAYOUT_SKID4) {
+        for (int i = 0; i < NNCAR_WHEEL_COUNT; ++i) {
+            actual_wheel_mps[i] = in->actual_wheel_mps[i];
+            if (!in->actual_wheel_valid[i] || !nncar_finite(actual_wheel_mps[i])) {
+                actual_wheels_valid = false;
+                actual_wheel_mps[i] = 0.0f;
+            }
+        }
+        float front_left = actual_wheel_mps[NNCAR_WHEEL_FRONT_LEFT];
+        float rear_left = actual_wheel_mps[NNCAR_WHEEL_REAR_LEFT];
+        float front_right = actual_wheel_mps[NNCAR_WHEEL_FRONT_RIGHT];
+        float rear_right = actual_wheel_mps[NNCAR_WHEEL_REAR_RIGHT];
+        actual_left_mps = (fabsf(front_left) >= fabsf(rear_left))
+                              ? front_left : rear_left;
+        actual_right_mps = (fabsf(front_right) >= fabsf(rear_right))
+                               ? front_right : rear_right;
+        actual_left_valid = actual_wheels_valid;
+        actual_right_valid = actual_wheels_valid;
+    }
+
+    sin.actual_left.value = actual_left_mps;
     sin.actual_left.exist = true;
-    sin.actual_left.valid = in->actual_valid && nncar_finite(in->actual_left_mps);
+    sin.actual_left.valid = actual_left_valid;
     sin.actual_left.timestamp_us = in->now_us;
 
-    sin.actual_right.value = in->actual_right_mps;
+    sin.actual_right.value = actual_right_mps;
     sin.actual_right.exist = true;
-    sin.actual_right.valid = in->actual_valid && nncar_finite(in->actual_right_mps);
+    sin.actual_right.valid = actual_right_valid;
     sin.actual_right.timestamp_us = in->now_us;
 
     sin.v_rail.value = in->v_rail;
@@ -122,6 +166,12 @@ static nncar_stack_output_t stack_step(nncar_stack_t *st,
     sin.line_lost = out.line_lost;
     sin.curvature_fault = (st->lambda_low_s >= p->curvature_fault_s);
     sin.applied_pwm_abs = fmaxf(fabsf(st->motor_l.u), fabsf(st->motor_r.u));
+    if (st->drive_layout == NNCAR_DRIVE_LAYOUT_SKID4) {
+        for (int i = 0; i < NNCAR_WHEEL_COUNT; ++i) {
+            sin.applied_pwm_abs = fmaxf(sin.applied_pwm_abs,
+                                        fabsf(st->motor_wheel[i].u));
+        }
+    }
 
     out.safety = nncar_safety_step(p, &st->safety, &sin, dt_s);
 
@@ -138,18 +188,54 @@ static nncar_stack_output_t stack_step(nncar_stack_t *st,
     min.rail_valid = in->v_rail_valid;
     min.enable = enable;
 
-    min.target_mps = out.safety.wheel_out.left;
-    min.actual_mps = in->actual_left_mps;
-    nncar_motor_out_t ml = nncar_motor_step(p, &st->motor_l, &st->motor_cfg, &min, dt_s);
+    if (st->drive_layout == NNCAR_DRIVE_LAYOUT_SKID4) {
+        const float side_target[NNCAR_WHEEL_COUNT] = {
+            out.safety.wheel_out.left,
+            out.safety.wheel_out.left,
+            out.safety.wheel_out.right,
+            out.safety.wheel_out.right
+        };
+        nncar_motor_out_t wheel_out[NNCAR_WHEEL_COUNT];
+        for (int i = 0; i < NNCAR_WHEEL_COUNT; ++i) {
+            min.target_mps = side_target[i];
+            min.actual_mps = actual_wheel_mps[i];
+            wheel_out[i] = nncar_motor_step(p, &st->motor_wheel[i],
+                                             &st->motor_cfg, &min, dt_s);
+            out.u_wheel[i] = wheel_out[i].u_cmd;
+            out.pwm_wheel[i] = wheel_out[i].pwm;
+        }
+        out.u_left = 0.5f * (wheel_out[NNCAR_WHEEL_FRONT_LEFT].u_cmd +
+                             wheel_out[NNCAR_WHEEL_REAR_LEFT].u_cmd);
+        out.u_right = 0.5f * (wheel_out[NNCAR_WHEEL_FRONT_RIGHT].u_cmd +
+                              wheel_out[NNCAR_WHEEL_REAR_RIGHT].u_cmd);
+        out.pwm.left = 0.5f * (wheel_out[NNCAR_WHEEL_FRONT_LEFT].pwm +
+                               wheel_out[NNCAR_WHEEL_REAR_LEFT].pwm);
+        out.pwm.right = 0.5f * (wheel_out[NNCAR_WHEEL_FRONT_RIGHT].pwm +
+                                wheel_out[NNCAR_WHEEL_REAR_RIGHT].pwm);
+    } else {
+        min.target_mps = out.safety.wheel_out.left;
+        min.actual_mps = in->actual_left_mps;
+        nncar_motor_out_t ml = nncar_motor_step(p, &st->motor_l, &st->motor_cfg,
+                                                 &min, dt_s);
 
-    min.target_mps = out.safety.wheel_out.right;
-    min.actual_mps = in->actual_right_mps;
-    nncar_motor_out_t mr = nncar_motor_step(p, &st->motor_r, &st->motor_cfg, &min, dt_s);
+        min.target_mps = out.safety.wheel_out.right;
+        min.actual_mps = in->actual_right_mps;
+        nncar_motor_out_t mr = nncar_motor_step(p, &st->motor_r, &st->motor_cfg,
+                                                 &min, dt_s);
 
-    out.u_left = ml.u_cmd;
-    out.u_right = mr.u_cmd;
-    out.pwm.left = ml.pwm;
-    out.pwm.right = mr.pwm;
+        out.u_left = ml.u_cmd;
+        out.u_right = mr.u_cmd;
+        out.pwm.left = ml.pwm;
+        out.pwm.right = mr.pwm;
+        out.u_wheel[NNCAR_WHEEL_FRONT_LEFT] = ml.u_cmd;
+        out.u_wheel[NNCAR_WHEEL_REAR_LEFT] = ml.u_cmd;
+        out.u_wheel[NNCAR_WHEEL_FRONT_RIGHT] = mr.u_cmd;
+        out.u_wheel[NNCAR_WHEEL_REAR_RIGHT] = mr.u_cmd;
+        out.pwm_wheel[NNCAR_WHEEL_FRONT_LEFT] = ml.pwm;
+        out.pwm_wheel[NNCAR_WHEEL_REAR_LEFT] = ml.pwm;
+        out.pwm_wheel[NNCAR_WHEEL_FRONT_RIGHT] = mr.pwm;
+        out.pwm_wheel[NNCAR_WHEEL_REAR_RIGHT] = mr.pwm;
+    }
 
     out.twist = st->twist;
     out.line = st->estimate;

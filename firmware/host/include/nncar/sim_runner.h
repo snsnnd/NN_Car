@@ -28,10 +28,13 @@ typedef struct {
 	nncar_stack_t stack;
 	nncar_velocity_t velocity_left;
 	nncar_velocity_t velocity_right;
+	nncar_velocity_t velocity_wheel[NNCAR_WHEEL_COUNT];
 	float encoder_accum_left;
 	float encoder_accum_right;
+	float encoder_accum_wheel[NNCAR_WHEEL_COUNT];
 	float wheel_velocity_left;
 	float wheel_velocity_right;
+	float wheel_velocity[NNCAR_WHEEL_COUNT];
 	uint64_t now_us;
 	uint64_t last_edge_us;
 	int total_ticks;

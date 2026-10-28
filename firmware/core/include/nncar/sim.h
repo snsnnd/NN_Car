@@ -5,9 +5,8 @@
 #include "nncar/profile.h"
 
 /*
- * Host-side plant: two independent DC-motor first-order models, differential
- * kinematics and a synthetic gray array. No wall clock; the only randomness is
- * an explicit, seeded xorshift so every run is reproducible.
+ * Host-side plant: differential drive or four-wheel skid-steer, per-wheel
+ * first-order motor models and a synthetic gray array. Randomness is seeded.
  */
 typedef struct {
     float x;
@@ -15,6 +14,7 @@ typedef struct {
     float theta;
     float w_left;
     float w_right;
+    float wheel_omega[NNCAR_WHEEL_COUNT];
     float v_rail;
     float line_width_m;
     float track_amp_m;
@@ -25,6 +25,14 @@ typedef struct {
     float torque_gain_nm;
     float wheel_radius_m;
     float track_width_m;
+    float wheel_inertia_kgm2[NNCAR_WHEEL_COUNT];
+    float wheel_damping_nms[NNCAR_WHEEL_COUNT];
+    float wheel_torque_gain_nm[NNCAR_WHEEL_COUNT];
+    float wheel_radius[NNCAR_WHEEL_COUNT];
+    float wheel_stiction_nm[NNCAR_WHEEL_COUNT];
+    float wheel_deadband[NNCAR_WHEEL_COUNT];
+    float skid_yaw_gain; /* empirical attenuation for lateral scrub */
+    nncar_drive_layout_t drive_layout;
 
     /*
      * Optional Coulomb friction at the wheel. Zero (the default) reproduces the
@@ -50,6 +58,8 @@ void nncar_sim_seed(nncar_sim_t *s, uint32_t seed);
 
 float nncar_sim_track_y(float x, const nncar_sim_t *s);
 void nncar_sim_set_map(nncar_sim_t *s, const nncar_map_t *map);
+void nncar_sim_set_drive_layout(nncar_sim_t *s,
+                                nncar_drive_layout_t drive_layout);
 float nncar_sim_lateral_error(const nncar_sim_t *s);
 
 void nncar_sim_read_gray(nncar_sim_t *s, const nncar_profile_t *p,
@@ -58,5 +68,7 @@ void nncar_sim_read_gray(nncar_sim_t *s, const nncar_profile_t *p,
                          uint8_t valid[NNCAR_MAX_SENSORS]);
 
 void nncar_sim_step(nncar_sim_t *s, const nncar_profile_t *p, nncar_pwm_t pwm, float dt_s);
+void nncar_sim_step_skid4(nncar_sim_t *s, const nncar_profile_t *p,
+                          const float pwm_wheel[NNCAR_WHEEL_COUNT], float dt_s);
 
 #endif

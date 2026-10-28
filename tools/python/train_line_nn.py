@@ -5,10 +5,10 @@ The network shape is frozen by line.h: 68 -> 64 -> 32 -> 16 -> 2 (7,058
 parameters, ReLU hidden layers, sigmoid for s_v, tanh for kappa_norm).
 
 Teacher data comes from ``nncar_line_ab --dump-teacher``. Each binary row is
-68 float32 inputs plus ``s_v`` and ``kappa_norm``. Rows are produced by two
-closed loops per episode: the ground-truth oracle and the PID baseline. The
-PID rows are off-policy states relabelled by the oracle, so the student sees
-the kinds of states it will actually visit once it is in the loop.
+68 float32 inputs plus ``s_v``, ``kappa_norm`` and ``kappa_pid_norm``. Rows are
+produced by three closed loops per episode: the ground-truth oracle, the PID
+baseline, and the current student. All rows are relabelled by the oracle, so
+student-in-the-loop states provide DAgger-style coverage.
 
 The teacher is a Stanley-style path tracker on the true pose (curvature
 feedforward + lateral and heading feedback). It therefore knows the heading,
@@ -17,10 +17,14 @@ learn the conditional mean. That gap is the point of the A/B test: the C-side
 ``nncar_line_ab --check`` measures whether the student still beats the PID.
 
 Training is deterministic: fixed seed, episode-level split, seeded shuffling.
+Use ``--holdout-vehicle ID`` to keep every episode from one vehicle out of
+training and select checkpoints on that vehicle instead.
 
 Usage:
     python3 tools/python/train_line_nn.py --data build/line_teacher.bin
     python3 tools/python/train_line_nn.py --data build/line_teacher.bin --epochs 60
+    python3 tools/python/train_line_nn.py --data old.bin --data dagger.bin \
+        --holdout-vehicle 4 --epochs 60
 
 Exit code 0 = trained, 2 = usage/data error.
 """
@@ -39,28 +43,46 @@ INPUT_DIM = 68
 HIDDEN = (64, 32, 16)
 OUTPUTS = 2
 LABELS = 3   # s_v, kappa_teacher, kappa_pid (the residual baseline)
-DUMP_ROW = INPUT_DIM + LABELS
-MAGIC = 0x4C4E4E31
+DUMP_ROWS = (INPUT_DIM + LABELS, INPUT_DIM + LABELS + 1)
+MAGIC_V1 = 0x4C4E4E31
+MAGIC = 0x4C4E4E32
+MAGIC_V3 = 0x4C4E4E33
 
 
-def load_dump(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int, int]:
+def load_dump(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int, int,
+                                  np.ndarray]:
     raw = np.fromfile(path, dtype=np.float32)
     if raw.size < 4:
         raise ValueError("dump is truncated")
     header = raw[:4].view(np.int32)
-    if int(header[0]) != MAGIC:
-        raise ValueError(f"bad magic 0x{int(header[0]):08x}")
+    magic = int(header[0])
+    if magic not in (MAGIC_V1, MAGIC, MAGIC_V3):
+        raise ValueError(f"bad magic 0x{magic:08x}")
     episodes = int(header[1])
     rows_per_run = int(header[2])
     runs_per_ep = int(header[3])
 
-    body = raw[4:].reshape(-1, DUMP_ROW)
+    if magic in (MAGIC, MAGIC_V3):
+        metadata_end = 4 + episodes
+        if raw.size < metadata_end:
+            raise ValueError("vehicle ID table is truncated")
+        vehicle_ids = raw[4:metadata_end].view(np.int32).copy()
+    else:
+        metadata_end = 4
+        vehicle_ids = np.zeros(episodes, dtype=np.int32)
+
     expected = episodes * runs_per_ep * rows_per_run
-    if body.shape[0] != expected:
-        raise ValueError(f"{body.shape[0]} rows, expected {expected}")
+    payload = raw[metadata_end:]
+    row_width = next((width for width in DUMP_ROWS
+                      if payload.size == expected * width), None)
+    if row_width is None:
+        raise ValueError(f"dump has {payload.size} floats, expected {expected} rows "
+                         f"of {DUMP_ROWS[0]} or {DUMP_ROWS[1]} floats")
+    body = payload.reshape(expected, row_width)
 
     return (body[:, :INPUT_DIM], body[:, INPUT_DIM:INPUT_DIM + OUTPUTS],
-            body[:, INPUT_DIM + OUTPUTS], episodes, rows_per_run, runs_per_ep)
+            body[:, INPUT_DIM + OUTPUTS], episodes, rows_per_run, runs_per_ep,
+            vehicle_ids)
 
 
 def init_net(rng: np.random.Generator) -> dict[str, np.ndarray]:
@@ -243,7 +265,8 @@ def export_json(path: Path, net: dict[str, np.ndarray], meta: dict) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", default="build/line_teacher.bin")
+    parser.add_argument("--data", action="append",
+                        help="teacher dump; repeat to aggregate DAgger rounds")
     parser.add_argument("--out-json", default="configs/line_nn_weights.json")
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--seed", type=int, default=0)
@@ -253,26 +276,53 @@ def main(argv: list[str]) -> int:
                         help="quantization-aware training (int8 fake-quant)")
     parser.add_argument("--residual", action="store_true",
                         help="learn kappa_teacher - kappa_pid instead of kappa")
+    parser.add_argument("--holdout-vehicle", type=int,
+                        help="validate on this vehicle ID and exclude it from training")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        (x_all, y_all, kappa_pid_all, episodes, rows_per_run,
-         runs_per_ep) = load_dump(Path(args.data))
+        data_paths = args.data or ["build/line_teacher.bin"]
+        dumps = [load_dump(Path(path)) for path in data_paths]
+        rows_per_run = dumps[0][4]
+        runs_per_ep = dumps[0][5]
+        if any(dump[4] != rows_per_run or dump[5] != runs_per_ep for dump in dumps):
+            raise ValueError("teacher dumps use incompatible episode dimensions")
+        x_all = np.concatenate([dump[0] for dump in dumps], axis=0)
+        y_all = np.concatenate([dump[1] for dump in dumps], axis=0)
+        kappa_pid_all = np.concatenate([dump[2] for dump in dumps], axis=0)
+        vehicle_ids = np.concatenate([dump[6] for dump in dumps], axis=0)
+        episodes = sum(dump[3] for dump in dumps)
     except (OSError, ValueError) as exc:
         print(f"train_line_nn: {exc}", file=sys.stderr)
         return 2
 
-    # Episode-level split: never split inside an episode block.
+    # Split whole episodes, and optionally reserve every row from one vehicle
+    # configuration to measure vehicle-level generalization.
     block = runs_per_ep * rows_per_run
-    rng = np.random.default_rng(args.seed)
-    order = rng.permutation(episodes)
-    split = int(round(episodes * 0.8))
-    train_eps = set(int(e) for e in order[:split])
+    if args.holdout_vehicle is None:
+        rng = np.random.default_rng(args.seed)
+        order = rng.permutation(episodes)
+        if episodes < 2:
+            print("train_line_nn: need at least two episodes", file=sys.stderr)
+            return 2
+        split = min(max(1, int(round(episodes * 0.8))), episodes - 1)
+        train_eps = set(int(e) for e in order[:split])
+        val_eps = set(int(e) for e in order[split:])
+    else:
+        val_eps = set(int(e) for e in np.flatnonzero(vehicle_ids == args.holdout_vehicle))
+        train_eps = set(range(episodes)) - val_eps
+        if not val_eps or not train_eps:
+            print(f"train_line_nn: vehicle ID {args.holdout_vehicle} must have episodes "
+                  "and leave at least one other vehicle for training", file=sys.stderr)
+            return 2
 
     train_mask = np.zeros(episodes * block, dtype=bool)
     for ep in train_eps:
         train_mask[ep * block:(ep + 1) * block] = True
+    val_mask = np.zeros(episodes * block, dtype=bool)
+    for ep in val_eps:
+        val_mask[ep * block:(ep + 1) * block] = True
 
     if args.residual:
         # The student only sees the state, never the PID command, so the label
@@ -283,8 +333,8 @@ def main(argv: list[str]) -> int:
 
     x = x_all[train_mask]
     y = y_all[train_mask]
-    x_val = x_all[~train_mask]
-    y_val = y_all[~train_mask]
+    x_val = x_all[val_mask]
+    y_val = y_all[val_mask]
 
     net = init_net(np.random.default_rng(args.seed))
     net = train(net, x, y, x_val, y_val, args.epochs, args.seed, qat=args.qat)
@@ -304,6 +354,8 @@ def main(argv: list[str]) -> int:
     if not args.quiet:
         print(f"train_line_nn: train={x.shape[0]} val={x_val.shape[0]} samples, "
               f"epochs={args.epochs}")
+        if args.holdout_vehicle is not None:
+            print(f"  validation vehicle ID={args.holdout_vehicle}")
         print(f"  val MSE={mse:.5f}  R2(s_v)={r2[0]:.4f}  R2(kappa)={r2[1]:.4f}")
         print(f"  label std: s_v={math.sqrt(float(var[0])):.4f} "
               f"kappa={math.sqrt(float(var[1])):.4f}")
@@ -311,8 +363,12 @@ def main(argv: list[str]) -> int:
     meta = {"seed": args.seed, "epochs": args.epochs,
             "samples": int(x.shape[0]), "residual": args.residual, "qat": args.qat,
             "metrics": metrics}
+    if args.holdout_vehicle is not None:
+        meta["holdout_vehicle"] = args.holdout_vehicle
     if args.int8:
-        meta["quant"] = calibrate_scales(net, x[:4096])
+        stride = max(1, x.shape[0] // 4096)
+        x_cal = x[::stride][:4096]
+        meta["quant"] = calibrate_scales(net, x_cal)
     export_json(Path(args.out_json), net, meta)
 
     if not args.quiet:

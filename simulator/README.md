@@ -90,6 +90,8 @@ playback; older logs remain loadable but cannot show per-sensor state.
   the C simulator, which switches maps and restarts after in-flight steps complete.
 - **Parameters** / `P`: edit live speed, start offset/heading, track amplitude/wavelength,
   duration, seed, and rail voltage. Applying parameters resets the live run from its start.
+- **Controller**: in live mode select PID, FP32 MLP, or int8 MLP. The Viewer displays the
+  C-confirmed active controller; switching waits for in-flight steps, then resets the run.
 - **Play/Pause** / `Space`: control playback. `R` resets the cursor.
 - **Step**: `←`/`→` move 0.1 s, `Shift`+`←`/`→` move 1 s. Speed selector: `0.5×`–`4×`.
 - **Seek**: drag the timeline, or click/drag inside a chart after opening **Charts**.

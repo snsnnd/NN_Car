@@ -31,6 +31,19 @@ typedef struct {
 } nncar_pwm_t;
 
 typedef enum {
+    NNCAR_DRIVE_LAYOUT_DIFF2 = 0,
+    NNCAR_DRIVE_LAYOUT_SKID4 = 1
+} nncar_drive_layout_t;
+
+enum {
+    NNCAR_WHEEL_FRONT_LEFT = 0,
+    NNCAR_WHEEL_REAR_LEFT = 1,
+    NNCAR_WHEEL_FRONT_RIGHT = 2,
+    NNCAR_WHEEL_REAR_RIGHT = 3,
+    NNCAR_WHEEL_COUNT = 4
+};
+
+typedef enum {
     NNCAR_STATUS_OK = 0,
     NNCAR_STATUS_STALE,
     NNCAR_STATUS_INVALID,

@@ -15,7 +15,8 @@ set(NNCAR_FP -ffp-contract=off -fno-fast-math)
 set(GEN_DIR ${CMAKE_BINARY_DIR}/generated)
 set(PROFILE_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/vehicle_default.json)
 set(WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/motor_nn_weights.json)
-set(LINE_WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/line_nn_weights.json)
+set(LINE_WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/line_nn_weights.json
+    CACHE FILEPATH "LineFollower weight JSON")
 set(DIRECT_WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/motor_nn_direct.json)
 set(LINE_RESIDUAL_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/line_nn_residual.json)
 file(MAKE_DIRECTORY ${GEN_DIR})
@@ -182,6 +183,25 @@ add_test(NAME calib_identify COMMAND nncar_calib_bench --check)
 # LineFollower A/B harness smoke test. The epsilon gate itself is a milestone
 # check (`nncar_line_ab --check`), not a regression test; see docs section 4.4.
 add_test(NAME line_ab COMMAND nncar_line_ab)
+add_test(NAME line_ab_fleet COMMAND nncar_line_ab --fleet-check)
+
+set(LINE_TEACHER_FLEET ${CMAKE_BINARY_DIR}/line_teacher_fleet_test.bin)
+set(LINE_TRAIN_FLEET_JSON ${CMAKE_BINARY_DIR}/line_nn_fleet_test.json)
+add_test(NAME line_teacher_fleet_dump
+         COMMAND nncar_line_ab --dump-teacher ${LINE_TEACHER_FLEET}
+                 --episodes 10 --seed 1)
+add_test(NAME line_teacher_fleet_train
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/train_line_nn.py
+                 --data ${LINE_TEACHER_FLEET} --epochs 1 --holdout-vehicle 4
+                 --out-json ${LINE_TRAIN_FLEET_JSON} --quiet)
+set_tests_properties(line_teacher_fleet_train PROPERTIES
+                     DEPENDS line_teacher_fleet_dump)
+add_test(NAME line_observability_fleet
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/line_observability.py
+                 --data ${LINE_TEACHER_FLEET} --holdout-vehicle 4
+                 --profile ${PROFILE_JSON} --quiet)
+set_tests_properties(line_observability_fleet PROPERTIES
+                     DEPENDS line_teacher_fleet_dump)
 
 set(BENCH_CSV ${CMAKE_BINARY_DIR}/bench.csv)
 set(BENCH_TRUTH ${CMAKE_BINARY_DIR}/bench_truth.json)

@@ -29,38 +29,50 @@ import numpy as np
 
 INPUT_DIM = 68
 OUTPUTS = 2
-ROW = INPUT_DIM + OUTPUTS
-MAGIC = 0x4C4E4E31
+ROW_WIDTHS = (INPUT_DIM + OUTPUTS + 1, INPUT_DIM + OUTPUTS + 2)
+MAGIC_V1 = 0x4C4E4E31
+MAGIC = 0x4C4E4E32
+MAGIC_V3 = 0x4C4E4E33
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def load_dump(path: Path) -> tuple[np.ndarray, int, int, int]:
+def load_dump(path: Path) -> tuple[np.ndarray, int, int, int, np.ndarray]:
     raw = np.fromfile(path, dtype=np.float32)
     if raw.size < 4:
         raise ValueError("dump is truncated")
     header = raw[:4].view(np.int32)
-    if int(header[0]) != MAGIC:
-        raise ValueError(f"bad magic 0x{int(header[0]):08x} (expected 0x{MAGIC:08x})")
+    magic = int(header[0])
+    if magic not in (MAGIC_V1, MAGIC, MAGIC_V3):
+        raise ValueError(f"bad magic 0x{magic:08x}")
     episodes = int(header[1])
     rows_per_run = int(header[2])
     runs = int(header[3])
 
-    body = raw[4:].reshape(-1, ROW)
+    if magic in (MAGIC, MAGIC_V3):
+        metadata_end = 4 + episodes
+        if raw.size < metadata_end:
+            raise ValueError("vehicle ID table is truncated")
+        vehicle_ids = raw[4:metadata_end].view(np.int32).copy()
+    else:
+        metadata_end = 4
+        vehicle_ids = np.zeros(episodes, dtype=np.int32)
     expected = episodes * runs * rows_per_run
-    if body.shape[0] != expected:
-        raise ValueError(f"{body.shape[0]} rows, expected {expected}")
-    return body, episodes, rows_per_run, runs
+    payload = raw[metadata_end:]
+    row_width = next((width for width in ROW_WIDTHS
+                      if payload.size == expected * width), None)
+    if row_width is None:
+        raise ValueError(f"dump has {payload.size} floats, expected {expected} rows "
+                         f"of {ROW_WIDTHS[0]} or {ROW_WIDTHS[1]} floats")
+    body = payload.reshape(expected, row_width)
+    return body, episodes, rows_per_run, runs, vehicle_ids
 
 
-def centroids(body: np.ndarray, profile: dict) -> np.ndarray:
-    """Recover the centroid that produced each row from the gray pattern."""
-    geom = profile["geometry"]
-    pos = np.zeros(16)
-    pos[:geom["sensor_count"]] = np.asarray(geom["sensor_position_m"])
-
+def centroids(body: np.ndarray) -> np.ndarray:
+    """Recover a normalized centroid using each row's own sensor geometry."""
     value = body[:, 0:16].astype(np.float64)
     exist = body[:, 16:32].astype(np.float64)
     valid = body[:, 32:48].astype(np.float64)
+    pos = body[:, 48:64].astype(np.float64)
     q = np.where((exist > 0) & (valid > 0), (value + 1.0) * 0.5, 0.0)
 
     denom = q.sum(axis=1)
@@ -109,11 +121,12 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--data", default="build/line_teacher.bin")
     parser.add_argument("--profile", default="configs/vehicle_default.json")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--holdout-vehicle", type=int)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        body, episodes, rows, runs = load_dump(Path(args.data))
+        body, episodes, rows, runs, vehicle_ids = load_dump(Path(args.data))
         with open(args.profile, "r", encoding="utf-8") as fh:
             profile = json.load(fh)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
@@ -122,13 +135,21 @@ def main(argv: list[str]) -> int:
 
     frame = body[:, :INPUT_DIM].astype(np.float64)
     label = body[:, INPUT_DIM + 1].astype(np.float64)
-    cent = centroids(body, profile)
+    cent = centroids(body)
     dt = float(profile["timing"]["line_dt_s"])
     alpha = 1.0 - np.exp(-2.0 * np.pi * float(profile["pid"]["d_filter_hz"]) * dt)
 
     rng = np.random.default_rng(args.seed)
-    order = rng.permutation(episodes)
-    held = set(int(e) for e in order[int(round(episodes * 0.8)):])
+    if args.holdout_vehicle is None:
+        order = rng.permutation(episodes)
+        split = min(max(1, int(round(episodes * 0.8))), episodes - 1)
+        held = set(int(e) for e in order[split:])
+    else:
+        held = set(int(e) for e in np.flatnonzero(vehicle_ids == args.holdout_vehicle))
+        if not held or len(held) == episodes:
+            print("line_observability: holdout vehicle must have episodes and leave "
+                  "episodes for fitting", file=sys.stderr)
+            return 2
 
     def split(kind: str):
         xs, ys, xv, yv = [], [], [], []

@@ -25,10 +25,13 @@ typedef enum {
     NNCAR_LINE_CTRL_MLP_INT8 = 3
 } nncar_line_ctrl_t;
 
+#ifndef NNCAR_LINE_INPUT_DIM
 #define NNCAR_LINE_INPUT_DIM 68
+#endif
 #define NNCAR_LINE_H1 64
 #define NNCAR_LINE_H2 32
 #define NNCAR_LINE_H3 16
+#define NNCAR_LINE_HISTORY_TAPS 10
 
 /* Pointer view of one gray frame; the caller keeps ownership. */
 typedef struct {
@@ -64,6 +67,7 @@ typedef struct {
     bool has_last_centroid;
     float prev_centroid_m;
     float history_centroid_m;   /* previous tick's centroid, as fed to the net */
+    float centroid_history_m[NNCAR_LINE_HISTORY_TAPS];
     float prev_t_s;
     float d_filtered;
     bool has_prev;

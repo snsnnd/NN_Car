@@ -29,11 +29,38 @@ typedef struct {
 typedef struct {
     const nncar_profile_t *profile;
     options_t options;
+    nncar_line_ctrl_t line_ctrl;
     nncar_sim_t sim;
     nncar_sim_session_t session;
     nncar_map_t map;
     bool has_map;
 } live_env_t;
+
+static const char *line_ctrl_name(nncar_line_ctrl_t ctrl)
+{
+    switch (ctrl) {
+    case NNCAR_LINE_CTRL_MLP: return "mlp";
+    case NNCAR_LINE_CTRL_MLP_INT8: return "int8";
+    case NNCAR_LINE_CTRL_PID:
+    default: return "pid";
+    }
+}
+
+static int parse_line_ctrl(const char *name, nncar_line_ctrl_t *ctrl)
+{
+    if (strcmp(name, "pid") == 0) {
+        *ctrl = NNCAR_LINE_CTRL_PID;
+    } else if (strcmp(name, "mlp") == 0) {
+        if (nncar_line_nn_trained() == NULL) return -1;
+        *ctrl = NNCAR_LINE_CTRL_MLP;
+    } else if (strcmp(name, "int8") == 0) {
+        if (nncar_line_nn_int8_trained() == NULL) return -1;
+        *ctrl = NNCAR_LINE_CTRL_MLP_INT8;
+    } else {
+        return -1;
+    }
+    return 0;
+}
 
 static int parse_float(const char *text, float *value)
 {
@@ -124,6 +151,9 @@ static void reset_session(live_env_t *env)
 
     nncar_sim_run_cfg_t cfg = {o->duration_s, o->v_desired};
     nncar_sim_session_init(&env->session, env->profile, &env->sim, cfg);
+    const nncar_line_nn_t *nn = env->line_ctrl == NNCAR_LINE_CTRL_MLP ?
+        nncar_line_nn_trained() : NULL;
+    nncar_stack_set_line_ctrl(&env->session.stack, env->line_ctrl, nn);
 }
 
 static int send_all(int fd, const char *data, size_t size)
@@ -225,7 +255,7 @@ static int send_state(int fd, const live_env_t *env, const nncar_log_row_t *row)
     char message[4096];
     size_t used = 0u;
     if (appendf(message, sizeof(message), &used,
-                "{\"event\":\"state\",\"t_us\":%llu,\"done\":%s,"
+        "{\"event\":\"state\",\"controller\":\"%s\",\"t_us\":%llu,\"done\":%s,"
                 "\"x\":%.7g,\"y\":%.7g,\"theta\":%.7g,"
                 "\"lateral_error_m\":%.7g,\"heading_error_rad\":%.7g,"
                 "\"mode\":%d,\"line_conf\":%.7g,\"line_found\":%d,"
@@ -240,6 +270,7 @@ static int send_state(int fd, const live_env_t *env, const nncar_log_row_t *row)
                 "\"safety_latched\":%d,\"safety_derate\":%.7g,"
                 "\"safety_ramp\":%.7g,\"safety_stop\":%d,"
                 "\"gray_value\":[",
+                line_ctrl_name(env->session.stack.line.ctrl),
                 (unsigned long long)row->t_us, done ? "true" : "false",
                 (double)row->x, (double)row->y, (double)row->theta,
                 (double)lateral_error, (double)heading_error, row->mode,
@@ -296,12 +327,14 @@ static int send_ready(int fd, const live_env_t *env)
         "{\"event\":\"ready\",\"protocol\":1,"
         "\"profile_verified\":%s,\"line_dt_s\":%.7g,"
         "\"motor_dt_s\":%.7g,\"sensor_count\":%d,"
+        "\"controller\":\"%s\","
         "\"scenario\":{\"duration_s\":%.7g,\"v_desired_mps\":%.7g,"
         "\"offset_m\":%.7g,\"heading_deg\":%.7g,\"amp_m\":%.7g,"
         "\"wavelength_m\":%.7g,\"rail_v\":%.7g,\"seed\":%u},\"map\":",
         nncar_profile_is_verified() ? "true" : "false",
         (double)env->profile->line_dt_s, (double)env->profile->motor_dt_s,
-        env->profile->sensor_count, (double)o->duration_s,
+        env->profile->sensor_count, line_ctrl_name(env->session.stack.line.ctrl),
+        (double)o->duration_s,
         (double)o->v_desired, (double)o->offset_m, (double)o->heading_deg,
         (double)o->amp_m, (double)o->wavelength_m, (double)o->rail_v,
         (unsigned)o->seed) != 0) {
@@ -328,6 +361,27 @@ static int send_ready(int fd, const live_env_t *env)
         if (appendf(message, sizeof(message), &used, "]}}\n") != 0) return -1;
     }
     return send_all(fd, message, used);
+}
+
+static int send_reset(int fd, const live_env_t *env)
+{
+    char message[128];
+    (void)snprintf(message, sizeof(message),
+                   "{\"event\":\"reset\",\"t_us\":0,\"controller\":\"%s\"}\n",
+                   line_ctrl_name(env->session.stack.line.ctrl));
+    return send_line(fd, message);
+}
+
+static int set_controller_from_command(int fd, live_env_t *env, const char *line)
+{
+    nncar_line_ctrl_t next_ctrl;
+    if (strncmp(line, "CTRL ", 5) != 0 ||
+        parse_line_ctrl(line + 5, &next_ctrl) != 0) {
+        return send_line(fd, "{\"event\":\"error\",\"message\":\"unsupported controller\"}\n");
+    }
+    env->line_ctrl = next_ctrl;
+    reset_session(env);
+    return send_reset(fd, env);
 }
 
 static int reset_from_command(live_env_t *env, const char *line)
@@ -449,9 +503,11 @@ static int serve_client(int fd, live_env_t *env)
         if (strcmp(line, "RESET") == 0 || strncmp(line, "RESET ", 6) == 0) {
             if (reset_from_command(env, line) != 0) {
                 if (send_line(fd, "{\"event\":\"error\",\"message\":\"invalid RESET\"}\n") != 0) return 0;
-            } else if (send_line(fd, "{\"event\":\"reset\",\"t_us\":0}\n") != 0) {
+            } else if (send_reset(fd, env) != 0) {
                 return 0;
             }
+        } else if (strncmp(line, "CTRL ", 5) == 0) {
+            if (set_controller_from_command(fd, env, line) != 0) return 0;
         } else if (strncmp(line, "MAPDATA ", 8) == 0) {
             if (load_map_data_from_command(fd, env, line) != 0) return 0;
         } else if (strncmp(line, "MAPFILE ", 8) == 0) {

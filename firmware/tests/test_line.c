@@ -44,10 +44,19 @@ static void test_mlp_contract(const nncar_profile_t *p, float v_max_eff,
     nncar_line_history_update(p, &hist, &moving, p->line_dt_s);
     CHECK_NEAR(hist.d_filtered, 0.0f, 1.0e-9f);
     CHECK_NEAR(hist.history_centroid_m, moving.centroid_m, 1.0e-9f);
+    for (int i = 0; i < NNCAR_LINE_HISTORY_TAPS; ++i) {
+        CHECK_NEAR(hist.centroid_history_m[i], moving.centroid_m, 1.0e-9f);
+    }
     moving.centroid_m = 0.02f;
     nncar_line_history_update(p, &hist, &moving, p->line_dt_s);
     CHECK(hist.d_filtered > 0.0f);
     CHECK_NEAR(hist.history_centroid_m, est->centroid_m, 1.0e-9f);
+    CHECK_NEAR(hist.centroid_history_m[0], est->centroid_m, 1.0e-9f);
+    CHECK_NEAR(hist.centroid_history_m[1], est->centroid_m, 1.0e-9f);
+    moving.centroid_m = 0.03f;
+    nncar_line_history_update(p, &hist, &moving, p->line_dt_s);
+    CHECK_NEAR(hist.centroid_history_m[0], 0.02f, 1.0e-9f);
+    CHECK_NEAR(hist.centroid_history_m[1], est->centroid_m, 1.0e-9f);
 
     /* Null network or PID mode must fall back to the deterministic PID. */
     nncar_line_state_t pid;

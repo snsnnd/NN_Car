@@ -35,6 +35,61 @@ int main(void)
     CHECK(res.fault_union == 0u);
     CHECK(res.max_omega <= 2.0f);
 
+    /* Four-wheel skid-steer with four encoder/PWM loops tracks the same line. */
+    nncar_sim_t skid4;
+    nncar_sim_init(&skid4, p, 0.0f, 0.02f, 3.0f * NNCAR_PI / 180.0f, 12.0f);
+    nncar_sim_set_drive_layout(&skid4, NNCAR_DRIVE_LAYOUT_SKID4);
+    skid4.wheel_torque_gain_nm[NNCAR_WHEEL_FRONT_LEFT] *= 0.85f;
+    nncar_sim_run_cfg_t skid4_cfg = {6.0f, 0.9f};
+    nncar_sim_session_t skid4_session;
+    nncar_sim_session_init(&skid4_session, p, &skid4, skid4_cfg);
+    while (nncar_sim_session_step(&skid4_session, NULL)) {
+        /* Advance the independent encoder and motor loops. */
+    }
+    nncar_sim_run_result_t skid4_result = skid4_session.result;
+    printf("  skid4:    final=%.5f max=%.5f omega=%.3f faults=0x%x\n",
+           (double)skid4_result.final_lat_m, (double)skid4_result.max_lat_m,
+           (double)skid4_result.max_omega, skid4_result.fault_union);
+    CHECK(skid4_result.final_lat_m < 0.01f);
+    CHECK(skid4_result.fault_union == 0u);
+    CHECK(fabsf(skid4_session.stack.motor_wheel[NNCAR_WHEEL_FRONT_LEFT].applied_pwm -
+                skid4_session.stack.motor_wheel[NNCAR_WHEEL_REAR_LEFT].applied_pwm) >
+          1.0e-4f);
+
+    /* Each simulated skid-steer wheel has its own motor response. */
+    nncar_sim_t independent_wheels;
+    nncar_sim_init(&independent_wheels, p, 0.0f, 0.0f, 0.0f, 12.0f);
+    nncar_sim_set_drive_layout(&independent_wheels, NNCAR_DRIVE_LAYOUT_SKID4);
+    independent_wheels.wheel_deadband[NNCAR_WHEEL_REAR_LEFT] = 0.2f;
+    const float wheel_pwm[NNCAR_WHEEL_COUNT] = {0.5f, 0.5f, 0.5f, 0.5f};
+    for (int i = 0; i < 100; ++i) {
+        nncar_sim_step_skid4(&independent_wheels, p, wheel_pwm, p->motor_dt_s);
+    }
+    CHECK(independent_wheels.wheel_omega[NNCAR_WHEEL_FRONT_LEFT] >
+          independent_wheels.wheel_omega[NNCAR_WHEEL_REAR_LEFT]);
+
+    /* Symmetric skid-steer plant matches the legacy two-wheel plant. */
+    nncar_sim_t diff2_reference;
+    nncar_sim_t skid4_symmetric;
+    nncar_sim_init(&diff2_reference, p, 0.0f, 0.01f, 0.0f, 12.0f);
+    nncar_sim_init(&skid4_symmetric, p, 0.0f, 0.01f, 0.0f, 12.0f);
+    nncar_sim_set_drive_layout(&skid4_symmetric, NNCAR_DRIVE_LAYOUT_SKID4);
+    const nncar_pwm_t symmetric_pwm = {0.62f, 0.48f};
+    const float symmetric_wheel_pwm[NNCAR_WHEEL_COUNT] = {
+        symmetric_pwm.left, symmetric_pwm.left,
+        symmetric_pwm.right, symmetric_pwm.right
+    };
+    for (int i = 0; i < 1000; ++i) {
+        nncar_sim_step(&diff2_reference, p, symmetric_pwm, p->motor_dt_s);
+        nncar_sim_step_skid4(&skid4_symmetric, p, symmetric_wheel_pwm,
+                             p->motor_dt_s);
+    }
+    CHECK_NEAR(skid4_symmetric.x, diff2_reference.x, 1.0e-5f);
+    CHECK_NEAR(skid4_symmetric.y, diff2_reference.y, 1.0e-5f);
+    CHECK_NEAR(skid4_symmetric.theta, diff2_reference.theta, 1.0e-5f);
+    CHECK_NEAR(skid4_symmetric.w_left, diff2_reference.w_left, 1.0e-5f);
+    CHECK_NEAR(skid4_symmetric.w_right, diff2_reference.w_right, 1.0e-5f);
+
     /* Slalom at reduced speed must stay within the line corridor. */
     nncar_sim_run_result_t slalom = run_case(p, 0.0f, 0.0f, 0.02f, 0.6f, 0.6f, 8.0f);
     printf("  slalom:   final=%.5f max=%.5f omega=%.3f faults=0x%x\n",
@@ -140,6 +195,27 @@ int main(void)
         policy_action, p->line_dt_s);
     CHECK_NEAR(policy_out.twist.v, 0.9f, 1.0e-5f);
     CHECK_NEAR(policy_out.twist.omega, 1.08f, 1.0e-4f);
+
+    /* A single overspeed skid-steer wheel must not be hidden by side averaging. */
+    nncar_stack_t skid_safety_stack;
+    nncar_stack_init(&skid_safety_stack, p);
+    nncar_stack_set_drive_layout(&skid_safety_stack, NNCAR_DRIVE_LAYOUT_SKID4);
+    nncar_stack_input_t skid_safety_input = {0};
+    skid_safety_input.v_desired = 0.5f;
+    skid_safety_input.v_rail = p->rail_nominal_v;
+    skid_safety_input.v_rail_valid = true;
+    skid_safety_input.v_rail_exist = true;
+    skid_safety_input.actual_valid = true;
+    skid_safety_input.comm_ok = true;
+    skid_safety_input.encoder_activity = true;
+    for (int i = 0; i < NNCAR_WHEEL_COUNT; ++i) {
+        skid_safety_input.actual_wheel_valid[i] = true;
+    }
+    skid_safety_input.actual_wheel_mps[NNCAR_WHEEL_FRONT_LEFT] = 2.0f;
+    nncar_stack_output_t skid_safety_out = nncar_stack_step(
+        &skid_safety_stack, p, &skid_safety_input, gray_a, exist_a, valid_a,
+        p->motor_dt_s);
+    CHECK((skid_safety_out.safety.active_faults & NNCAR_FAULT_OVERSPEED) != 0u);
 
     TEST_END();
 }

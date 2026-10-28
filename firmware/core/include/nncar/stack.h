@@ -23,6 +23,8 @@ typedef struct {
     float actual_left_mps;
     float actual_right_mps;
     bool actual_valid;
+    float actual_wheel_mps[NNCAR_WHEEL_COUNT];
+    bool actual_wheel_valid[NNCAR_WHEEL_COUNT];
     bool encoder_activity;
     bool comm_ok;
     bool estop;
@@ -34,6 +36,8 @@ typedef struct {
 typedef struct {
     nncar_twist_t twist;
     nncar_pwm_t pwm;
+    float pwm_wheel[NNCAR_WHEEL_COUNT];
+    float u_wheel[NNCAR_WHEEL_COUNT];
     nncar_line_estimate_t line;
     nncar_mix_result_t mix;
     nncar_safety_output_t safety;
@@ -48,7 +52,9 @@ typedef struct {
     nncar_line_state_t line;
     nncar_motor_state_t motor_l;
     nncar_motor_state_t motor_r;
+    nncar_motor_state_t motor_wheel[NNCAR_WHEEL_COUNT];
     nncar_motor_cfg_t motor_cfg;
+    nncar_drive_layout_t drive_layout;
     nncar_safety_state_t safety;
     nncar_line_estimate_t estimate;
     nncar_mix_result_t mix;
@@ -60,11 +66,15 @@ typedef struct {
 
 void nncar_stack_init(nncar_stack_t *st, const nncar_profile_t *p);
 
+/* Four-wheel skid-steer uses one independently closed-loop motor per wheel. */
+void nncar_stack_set_drive_layout(nncar_stack_t *st,
+                                  nncar_drive_layout_t drive_layout);
+
 /* Select one of the three motor baselines; nn may be NULL for PI_RESIDUAL. */
 void nncar_stack_set_motor_mode(nncar_stack_t *st, nncar_motor_mode_t mode,
                                 const nncar_motor_nn_t *nn);
 
-/* Select PID or MLP LineFollower; nn may be NULL to force the PID path. */
+/* Select PID, FP32 MLP, or int8 MLP; nn is used by the FP32 MLP path. */
 void nncar_stack_set_line_ctrl(nncar_stack_t *st, nncar_line_ctrl_t ctrl,
                                const nncar_line_nn_t *nn);
 
