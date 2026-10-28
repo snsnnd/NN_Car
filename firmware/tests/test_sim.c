@@ -43,6 +43,35 @@ int main(void)
     CHECK(slalom.max_lat_m < 0.045f);
     CHECK(slalom.fault_union == 0u);
 
+    /* Batch and incremental session APIs must produce the same C truth. */
+    nncar_sim_t batch_sim;
+    nncar_sim_t stepped_sim;
+    nncar_sim_init(&batch_sim, p, 0.0f, 0.01f, 0.0f, 12.0f);
+    nncar_sim_init(&stepped_sim, p, 0.0f, 0.01f, 0.0f, 12.0f);
+    batch_sim.track_amp_m = 0.02f;
+    stepped_sim.track_amp_m = 0.02f;
+    batch_sim.track_wavelength_m = 0.6f;
+    stepped_sim.track_wavelength_m = 0.6f;
+    nncar_sim_run_cfg_t incremental_cfg = {0.12f, 0.6f};
+    nncar_sim_run_result_t batch_result = nncar_sim_run(
+        p, &batch_sim, incremental_cfg, NULL, NULL);
+    nncar_sim_session_t session;
+    nncar_sim_session_init(&session, p, &stepped_sim, incremental_cfg);
+    nncar_log_row_t last_row;
+    int step_count = 0;
+    while (nncar_sim_session_step(&session, &last_row)) {
+        ++step_count;
+    }
+    CHECK(step_count == (int)batch_result.ticks);
+    CHECK(stepped_sim.x == batch_sim.x);
+    CHECK(stepped_sim.y == batch_sim.y);
+    CHECK(stepped_sim.theta == batch_sim.theta);
+    CHECK(stepped_sim.w_left == batch_sim.w_left);
+    CHECK(stepped_sim.w_right == batch_sim.w_right);
+    CHECK(session.result.final_lat_m == batch_result.final_lat_m);
+    CHECK(session.result.max_lat_m == batch_result.max_lat_m);
+    CHECK(session.result.fault_union == batch_result.fault_union);
+
     /* Lower rail voltage must still track, at reduced top speed. */
     nncar_sim_t sim;
     nncar_sim_init(&sim, p, 0.0f, 0.01f, 0.0f, 11.0f);

@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.0.0",
+  "name": "line-following-regression",
+  "description": "Deterministic baseline, smooth S-curve, and sensor-dropout cases.",
+  "cases": [
+    {
+      "name": "straight-nominal",
+      "description": "Straight track with small initial pose error.",
+      "seeds": [23],
+      "scenario": {
+        "duration_s": 8.0,
+        "v_desired_mps": 0.8,
+        "offset_m": 0.02,
+        "heading_deg": 3.0,
+        "amp_m": 0.0,
+        "wavelength_m": 1.0,
+        "rail_v": 12.0
+      }
+    },
+    {
+      "name": "s-curve-nominal",
+      "description": "Smooth reference curvature at nominal speed.",
+      "seeds": [23],
+      "scenario": {
+        "duration_s": 8.0,
+        "v_desired_mps": 0.8,
+        "offset_m": 0.0,
+        "heading_deg": 0.0,
+        "amp_m": 0.08,
+        "wavelength_m": 3.0,
+        "rail_v": 12.0
+      }
+    },
+    {
+      "name": "sensor-dropout",
+      "description": "Noisy sensor readings with one disconnected channel.",
+      "seeds": [23],
+      "scenario": {
+        "duration_s": 8.0,
+        "v_desired_mps": 0.6,
+        "offset_m": 0.0,
+        "heading_deg": 0.0,
+        "amp_m": 0.02,
+        "wavelength_m": 0.6,
+        "rail_v": 12.0,
+        "gray_noise_std": 0.04,
+        "gray_missing_mask": 4
+      }
+    }
+  ]
+}

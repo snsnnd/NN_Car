@@ -101,6 +101,10 @@ add_executable(nncar_rl_env firmware/host/src/rl_env_main.c)
 target_compile_options(nncar_rl_env PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
 target_link_libraries(nncar_rl_env PRIVATE nncar_core)
 
+add_executable(nncar_live firmware/host/src/sim_live_main.c)
+target_compile_options(nncar_live PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
+target_link_libraries(nncar_live PRIVATE nncar_host)
+
 add_executable(nncar_replay firmware/host/src/replay_main.c)
 target_compile_options(nncar_replay PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
 target_link_libraries(nncar_replay PRIVATE nncar_core)
@@ -152,7 +156,15 @@ add_test(NAME replay_sim_run COMMAND nncar_replay ${SIM_CSV})
 set_tests_properties(replay_sim_run PROPERTIES DEPENDS sim_run)
 add_test(NAME rl_environment
          COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/test_rl_env.py
-                 $<TARGET_FILE:nncar_rl_env>)
+                  $<TARGET_FILE:nncar_rl_env>)
+
+add_test(NAME live_simulator_protocol
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/test_live_sim.py
+                 $<TARGET_FILE:nncar_live>)
+
+add_test(NAME simulation_experiment_runner
+         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/test_simctl.py
+                 $<TARGET_FILE:nncar_sim>)
 
 add_test(NAME baseline_modes COMMAND nncar_baseline --check)
 
