@@ -71,21 +71,29 @@ playback; older logs remain loadable but cannot show per-sensor state.
 ## Viewer controls
 
 - **Open CSV** / `O`: load a C simulator log.
-- **Play/Pause** / `Space`: control playback.
-- **Reset** / `R`: return to the beginning.
-- Speed selector: `0.5×`, `1×`, `2×` or `4×`; drag the slider to scrub.
-- **Live**: connect/disconnect the C fixed-step service; **Play/Pause** controls live stepping.
-- **Save**: write the current live/replay samples to CSV plus a matching manifest.
-- **Charts ↗**: open the synchronized waveforms in a separate native window. Use the
-  window's `+`/`−` or mouse wheel to zoom the time axis, middle-drag to pan, and **Fit**
-  to restore the full run. The overview and detached window share zoom and cursor state.
-- **F11**: toggle fullscreen.
-- **Right-drag**: orbit; mouse wheel: zoom; **middle-drag**: pan.
-- **F**: toggle follow/free camera; **V**: frame the full track; **0**: reset the follow view.
+- **Play/Pause** / `Space`: control playback. `R` resets the cursor.
+- **Step**: `←`/`→` move 0.1 s, `Shift`+`←`/`→` move 1 s. Speed selector: `0.5×`–`4×`.
+- **Seek**: drag the timeline, or click/drag inside the telemetry strip chart.
+- **Live** / `L`: connect to or stop the C fixed-step service. **Play/Pause**
+  controls live stepping.
+- **Save** / `S`: write the current live/replay samples to CSV plus a matching manifest.
+- **Charts** / `C`: open the six-band telemetry in a detached window. **Expand** / `D`
+  hides the run rail and gives the telemetry dock the window.
+- **Camera**: `F` follows the car, `V` fits the whole track, `T` switches to a top-down
+  map, `0` resets the current view. Right-drag orbits, the wheel zooms, middle-drag pans.
+- **Help**: `?` or `F1` opens the controls panel. `F11` toggles fullscreen.
 
-The viewer draws the reference centerline from the CSV's matching manifest and overlays
-the logged vehicle path in teal. For an S-curve example, run `nncar_sim` with
-`--amp 0.08 --wavelength 3.0 --v 0.8`; the default `--amp 0` is a straight track.
+The left rail shows run identity, scenario/seed, primary tracking errors, the magnified
+gray-sensor array, and a pinned safety block. The bottom dock is a synchronized strip
+chart: stable scales, a shared cursor, hover readouts, click-to-seek, wheel time zoom,
+and tinted fault/recovery spans. The profile chip reads **MODEL UNVERIFIED** while the
+vehicle profile is not hardware-calibrated.
+
+The viewer draws the reference centerline from the CSV's matching manifest and colors
+the logged vehicle path by cross-track error (mint on the line, amber and coral as the
+error grows). In follow mode a 3D tether shows the signed error at the car. For an
+S-curve example, run `nncar_sim` with `--amp 0.08 --wavelength 3.0 --v 0.8`; the default
+`--amp 0` is a straight track.
 
 The architecture, loopback protocol, timing contract and waveform definitions are in
 [`docs/06_仿真器架构与遥测设计.md`](../docs/06_仿真器架构与遥测设计.md).
