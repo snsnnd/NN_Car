@@ -67,6 +67,26 @@
         "wavelength_m": { "type": "number", "exclusiveMinimum": 0 },
         "rail_v": { "type": "number", "minimum": 0 }
       }
+    },
+    "map": {
+      "type": ["object", "null"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "line_width_m": { "type": "number", "exclusiveMinimum": 0 },
+        "start_x_m": { "type": "number" },
+        "start_y_m": { "type": "number" },
+        "start_theta_rad": { "type": "number" },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": { "type": "number" }
+          }
+        }
+      }
     }
   },
   "x-csv": {

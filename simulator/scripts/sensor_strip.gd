@@ -19,7 +19,7 @@ var _bar_bg: StyleBoxFlat
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	focus_mode = Control.FOCUS_NONE
-	custom_minimum_size.y = 60.0
+	custom_minimum_size.y = 72.0
 	_bar_bg = Ui.flat(Color(Ui.SURFACE_2, 0.7), Color(Ui.LINE, 0.9), 3, 1)
 	mouse_exited.connect(func() -> void:
 		hover_channel = -1
@@ -64,7 +64,7 @@ func _channel_at(x: float) -> int:
 
 
 func _bar_area() -> Rect2:
-	return Rect2(Vector2(0.0, 10.0), Vector2(size.x, 30.0))
+	return Rect2(Vector2(0.0, 13.0), Vector2(size.x, 34.0))
 
 
 func _draw() -> void:
@@ -110,7 +110,7 @@ func _draw() -> void:
 		elif valid == 0:
 			index_color = Ui.ACCENT
 		draw_string(Ui.MONO, Vector2(x, area.end.y + 9.0), "%02d" % index,
-			HORIZONTAL_ALIGNMENT_CENTER, bar_w, 8, index_color)
+			HORIZONTAL_ALIGNMENT_CENTER, bar_w, 10, index_color)
 
 	draw_line(Vector2(area.position.x, baseline_y), Vector2(area.end.x, baseline_y),
 		Ui.LINE, 1.0)
@@ -129,20 +129,20 @@ func _draw() -> void:
 		])
 		draw_colored_polygon(triangle, Ui.ACCENT)
 
-	draw_string(font, Vector2(0.0, area.position.y - 4.0), "L", HORIZONTAL_ALIGNMENT_LEFT,
-		-1.0, 8, Ui.FAINT)
-	draw_string(font, Vector2(0.0, area.position.y - 4.0), "R", HORIZONTAL_ALIGNMENT_RIGHT,
-		size.x, 8, Ui.FAINT)
+	draw_string(font, Vector2(0.0, area.position.y - 4.0), "左", HORIZONTAL_ALIGNMENT_LEFT,
+		-1.0, 10, Ui.FAINT)
+	draw_string(font, Vector2(0.0, area.position.y - 4.0), "右", HORIZONTAL_ALIGNMENT_RIGHT,
+		size.x, 10, Ui.FAINT)
 	var caption := ""
 	if not has_data:
-		caption = "sensor channels not logged"
+		caption = "未记录传感器数据"
 	elif hover_channel >= 0:
 		var suffix := "%02d" % hover_channel
 		var exist := int(sample.get("gray_exist_" + suffix, 1))
 		var valid := int(sample.get("gray_valid_" + suffix, 0))
 		var value := float(sample.get("gray_value_" + suffix, 0.0))
-		var state := "MISSING" if exist == 0 else ("INVALID" if valid == 0 else "VALID")
-		caption = "CH %02d  %+0.2f  %s" % [hover_channel, value, state]
+		var state := "缺失" if exist == 0 else ("无效" if valid == 0 else "有效")
+		caption = "通道 %02d  %+0.2f  %s" % [hover_channel, value, state]
 	else:
 		var valid_count := int(sample.get("valid_count", 0))
 		var present := 0
@@ -154,10 +154,10 @@ func _draw() -> void:
 		if present == 0:
 			valid_sum = valid_count
 			present = channels
-		caption = "%02d/%02d valid  ·  conf %0.2f" % [valid_sum, present,
+		caption = "%02d/%02d 有效 · 置信度 %0.2f" % [valid_sum, present,
 			float(sample.get("line_conf", 0.0))]
 	draw_string(Ui.MONO, Vector2(0.0, size.y - 2.0), caption, HORIZONTAL_ALIGNMENT_LEFT,
-		size.x, 9, Ui.MUTED)
+		size.x, 11, Ui.MUTED)
 
 
 func _centroid_x(centroid_m: float, area: Rect2) -> float:

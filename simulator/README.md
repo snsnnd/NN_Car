@@ -24,8 +24,8 @@ server; they communicate over `127.0.0.1` TCP. Closing Godot stops the server.
 Batch experiments are defined in versioned JSON plans, independent of the viewer. A plan
 contains named scenarios and explicit seeds; `simctl` validates the plan, runs the C
 simulator headlessly, validates every CSV/manifest, and records per-run metrics and
-artifacts. The checked-in regression plan includes straight, S-curve, and sensor-dropout
-cases:
+artifacts. The checked-in regression plan includes straight, S-curve, oval-map, and
+sensor-dropout cases:
 
 ```bash
 python3 tools/python/simctl.py validate simulator/scenarios/regression_suite.json
@@ -40,6 +40,21 @@ The run folder can be opened in Godot by loading one of its CSV files.
 
 The plan format is described by
 [`tools/schema/experiment_plan.schema.json`](../tools/schema/experiment_plan.schema.json).
+
+## Track maps
+
+Choose a JSON polyline map at simulator launch; the same map geometry drives the C
+simulation and the Godot live/replay view. For example:
+
+```bash
+bash simulator/run_demo.sh --map-file simulator/maps/oval.json --v 0.4
+```
+
+To use another track, pass its JSON file with `--map-file`. The format uses `[id, x, y]`
+nodes, directed `[from, to]` edges, `units_per_meter`, `line_width_m`, and a start node
+with an optional heading/next node. See
+[`tools/schema/track_map.schema.json`](../tools/schema/track_map.schema.json). Experiment
+plans also accept `scenario.map_file`.
 
 Examples:
 
@@ -71,23 +86,32 @@ playback; older logs remain loadable but cannot show per-sensor state.
 ## Viewer controls
 
 - **Open CSV** / `O`: load a C simulator log.
+- **Map** / `M`: open a JSON track map. In live mode the viewer sends the JSON contents to
+  the C simulator, which switches maps and restarts after in-flight steps complete.
+- **Parameters** / `P`: edit live speed, start offset/heading, track amplitude/wavelength,
+  duration, seed, and rail voltage. Applying parameters resets the live run from its start.
 - **Play/Pause** / `Space`: control playback. `R` resets the cursor.
 - **Step**: `←`/`→` move 0.1 s, `Shift`+`←`/`→` move 1 s. Speed selector: `0.5×`–`4×`.
-- **Seek**: drag the timeline, or click/drag inside the telemetry strip chart.
+- **Seek**: drag the timeline, or click/drag inside a chart after opening **Charts**.
 - **Live** / `L`: connect to or stop the C fixed-step service. **Play/Pause**
   controls live stepping.
 - **Save** / `S`: write the current live/replay samples to CSV plus a matching manifest.
-- **Charts** / `C`: open the six-band telemetry in a detached window. **Expand** / `D`
-  hides the run rail and gives the telemetry dock the window.
+- **Charts** / `C`: open the six-band telemetry in a detached window; waveforms appear
+  only in that separate window.
 - **Camera**: `F` follows the car, `V` fits the whole track, `T` switches to a top-down
   map, `0` resets the current view. Right-drag orbits, the wheel zooms, middle-drag pans.
 - **Help**: `?` or `F1` opens the controls panel. `F11` toggles fullscreen.
 
+The viewer UI is in Simplified Chinese. It bundles Noto Sans CJK SC as a fallback so the
+Chinese text renders even when the host system has no CJK font installed; see
+[`assets/fonts/OFL-NotoSansCJK.txt`](assets/fonts/OFL-NotoSansCJK.txt) for its license.
+
 The left rail shows run identity, scenario/seed, primary tracking errors, the magnified
-gray-sensor array, and a pinned safety block. The bottom dock is a synchronized strip
-chart: stable scales, a shared cursor, hover readouts, click-to-seek, wheel time zoom,
-and tinted fault/recovery spans. The profile chip reads **MODEL UNVERIFIED** while the
-vehicle profile is not hardware-calibrated.
+gray-sensor array, and a pinned safety block. The bottom dock contains playback controls
+and the run timeline. The detached Charts window contains synchronized strip charts with
+stable scales, hover readouts, click-to-seek, wheel time zoom, and tinted fault/recovery
+spans. The profile chip reads **MODEL UNVERIFIED** while the vehicle profile is not
+hardware-calibrated.
 
 The viewer draws the reference centerline from the CSV's matching manifest and colors
 the logged vehicle path by cross-track error (mint on the line, amber and coral as the

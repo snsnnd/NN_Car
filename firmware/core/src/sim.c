@@ -34,6 +34,15 @@ void nncar_sim_seed(nncar_sim_t *s, uint32_t seed)
     s->rng = (seed != 0u) ? seed : 0x9e3779b9u;
 }
 
+void nncar_sim_set_map(nncar_sim_t *s, const nncar_map_t *map)
+{
+    s->map = map;
+    if (map != NULL && map->line_width_m > 0.0f) {
+        s->line_width_m = map->line_width_m;
+        s->track_amp_m = 0.0f;
+    }
+}
+
 static float sim_rand(nncar_sim_t *s)
 {
     uint32_t x = s->rng;
@@ -50,6 +59,16 @@ float nncar_sim_track_y(float x, const nncar_sim_t *s)
         return 0.0f;
     }
     return s->track_amp_m * sinf(2.0f * NNCAR_PI * x / s->track_wavelength_m);
+}
+
+float nncar_sim_lateral_error(const nncar_sim_t *s)
+{
+    if (s->map != NULL) {
+        float lateral = 0.0f;
+        (void)nncar_map_query(s->map, s->x, s->y, &lateral, NULL);
+        return lateral;
+    }
+    return s->y - nncar_sim_track_y(s->x, s);
 }
 
 void nncar_sim_read_gray(nncar_sim_t *s, const nncar_profile_t *p,
@@ -74,7 +93,9 @@ void nncar_sim_read_gray(nncar_sim_t *s, const nncar_profile_t *p,
         float sx = s->x + fwd_x * p->sensor_to_axle_m + left_x * y_i;
         float sy = s->y + fwd_y * p->sensor_to_axle_m + left_y * y_i;
 
-        float d = sy - nncar_sim_track_y(sx, s);
+        float d = s->map != NULL ?
+            nncar_map_query(s->map, sx, sy, NULL, NULL) :
+            sy - nncar_sim_track_y(sx, s);
         float t = fabsf(d) / (0.5f * s->line_width_m);
         float g;
 

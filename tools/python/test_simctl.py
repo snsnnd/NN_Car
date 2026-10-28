@@ -91,8 +91,11 @@ def main() -> int:
         regression_summary = json.loads(
             (regression_root / "summary.json").read_text(encoding="utf-8")
         )
-        if regression_summary["status"] != "complete" or len(regression_summary["runs"]) != 3:
+        if regression_summary["status"] != "complete" or len(regression_summary["runs"]) != 4:
             raise AssertionError("checked-in regression suite did not complete all cases")
+        oval_run = next(run for run in regression_summary["runs"] if run["case"] == "oval-map")
+        if oval_run["status"] != "complete" or "rms_lateral_error_m" not in oval_run["metrics"]:
+            raise AssertionError("runtime map track did not produce valid metrics")
 
     print("simctl: validation, artifacts, metrics, deterministic rerun, and suite ok")
     return 0

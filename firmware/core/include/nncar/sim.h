@@ -1,6 +1,7 @@
 #ifndef NNCAR_SIM_H
 #define NNCAR_SIM_H
 
+#include "nncar/map.h"
 #include "nncar/profile.h"
 
 /*
@@ -18,6 +19,7 @@ typedef struct {
     float line_width_m;
     float track_amp_m;
     float track_wavelength_m;
+    const nncar_map_t *map;
     float inertia_kgm2;
     float damping_nms;
     float torque_gain_nm;
@@ -47,6 +49,8 @@ void nncar_sim_init(nncar_sim_t *s, const nncar_profile_t *p,
 void nncar_sim_seed(nncar_sim_t *s, uint32_t seed);
 
 float nncar_sim_track_y(float x, const nncar_sim_t *s);
+void nncar_sim_set_map(nncar_sim_t *s, const nncar_map_t *map);
+float nncar_sim_lateral_error(const nncar_sim_t *s);
 
 void nncar_sim_read_gray(nncar_sim_t *s, const nncar_profile_t *p,
                          float value[NNCAR_MAX_SENSORS],

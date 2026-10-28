@@ -12,45 +12,45 @@ const IMMEDIATE_FAULT_MASK := 0x9C1  # ESTOP | HARD_OVERSPEED | UNDERVOLT | OVER
 
 const PLOTS := [
 	{
-		"name": "CROSS-TRACK", "unit": "mm", "mode": "symmetric", "min_span": 12.0,
+		"name": "横向误差", "unit": "mm", "mode": "symmetric", "min_span": 12.0,
 		"decimals": 1, "signed": true, "band": true,
 		"series": [{"key": "lateral_error_mm", "color": Ui.ACCENT, "width": 1.8, "fill": true}]
 	},
 	{
-		"name": "HEADING", "unit": "deg", "mode": "symmetric", "min_span": 2.0,
+		"name": "航向偏差", "unit": "deg", "mode": "symmetric", "min_span": 2.0,
 		"decimals": 2, "signed": true, "band": false,
 		"series": [{"key": "heading_error_deg", "color": Ui.STEEL, "width": 1.6}]
 	},
 	{
-		"name": "SPEED", "unit": "m/s", "mode": "positive", "min_span": 0.3,
+		"name": "速度", "unit": "m/s", "mode": "positive", "min_span": 0.3,
 		"decimals": 3, "signed": false, "band": false,
 		"series": [
-			{"key": "v_target", "color": Ui.MUTED, "width": 1.0, "dash": true, "short": "T"},
-			{"key": "speed_actual_mps", "color": Ui.MINT, "width": 1.8, "short": "A"}
+			{"key": "v_target", "color": Ui.MUTED, "width": 1.0, "dash": true, "short": "目标"},
+			{"key": "speed_actual_mps", "color": Ui.MINT, "width": 1.8, "short": "实测"}
 		]
 	},
 	{
-		"name": "YAW RATE", "unit": "rad/s", "mode": "symmetric", "min_span": 0.4,
+		"name": "偏航角速度", "unit": "rad/s", "mode": "symmetric", "min_span": 0.4,
 		"decimals": 2, "signed": true, "band": false,
 		"series": [
-			{"key": "omega_target", "color": Ui.MUTED, "width": 1.0, "dash": true, "short": "T"},
-			{"key": "omega_actual_radps", "color": Ui.STEEL, "width": 1.8, "short": "P"}
+			{"key": "omega_target", "color": Ui.MUTED, "width": 1.0, "dash": true, "short": "目标"},
+			{"key": "omega_actual_radps", "color": Ui.STEEL, "width": 1.8, "short": "实测"}
 		]
 	},
 	{
-		"name": "MOTOR OUTPUT", "unit": "PWM", "mode": "fixed", "min": -1.0, "max": 1.0,
+		"name": "电机输出", "unit": "PWM", "mode": "fixed", "min": -1.0, "max": 1.0,
 		"decimals": 2, "signed": true, "band": false,
 		"series": [
-			{"key": "pwm_l", "color": Ui.MINT, "width": 1.5, "short": "L"},
-			{"key": "pwm_r", "color": Ui.ROSE, "width": 1.5, "short": "R"}
+			{"key": "pwm_l", "color": Ui.MINT, "width": 1.5, "short": "左"},
+			{"key": "pwm_r", "color": Ui.ROSE, "width": 1.5, "short": "右"}
 		]
 	},
 	{
-		"name": "LINE / SENSORS", "unit": "0-1", "mode": "ratio", "min": 0.0, "max": 1.0,
+		"name": "循线 / 传感器", "unit": "0-1", "mode": "ratio", "min": 0.0, "max": 1.0,
 		"decimals": 2, "signed": false, "band": false,
 		"series": [
-			{"key": "line_conf", "color": Ui.OLIVE, "width": 1.5, "short": "C"},
-			{"key": "sensor_valid_ratio", "color": Ui.STEEL, "width": 1.3, "short": "V"}
+			{"key": "line_conf", "color": Ui.OLIVE, "width": 1.5, "short": "置信"},
+			{"key": "sensor_valid_ratio", "color": Ui.STEEL, "width": 1.3, "short": "有效"}
 		]
 	}
 ]
@@ -262,8 +262,8 @@ func _time_at_x(x: float) -> float:
 
 
 func _plot_rect() -> Rect2:
-	var label_w := 154.0 if compact else 196.0
-	var axis_h := 26.0 if compact else 30.0
+	var label_w := 170.0 if compact else 220.0
+	var axis_h := 29.0 if compact else 34.0
 	return Rect2(Vector2(label_w, 4.0), Vector2(maxf(size.x - label_w - 10.0, 20.0),
 		maxf(size.y - axis_h - 6.0, 20.0)))
 
@@ -402,7 +402,7 @@ func _update_events() -> void:
 
 func _draw() -> void:
 	draw_style_box(_bg_style, Rect2(Vector2.ZERO, size))
-	var label_w := 154.0 if compact else 196.0
+	var label_w := 170.0 if compact else 220.0
 	if samples.size() < 2:
 		_draw_empty()
 		return
@@ -436,13 +436,13 @@ func _draw_empty() -> void:
 		draw_line(Vector2(10.0, strip.position.y), Vector2(size.x - 10.0, strip.position.y),
 			Color(Ui.LINE, 0.65), 1.0)
 		draw_string(font, Vector2(18.0, strip.position.y + strip.size.y * 0.55),
-			str(PLOTS[index]["name"]), HORIZONTAL_ALIGNMENT_LEFT, -1.0, 9, Ui.FAINT)
+			str(PLOTS[index]["name"]), HORIZONTAL_ALIGNMENT_LEFT, -1.0, 11, Ui.FAINT)
 	var plot := _plot_rect()
 	var center := plot.get_center()
 	draw_string(Ui.SANS_MEDIUM, Vector2(plot.position.x + 24.0, center.y - 2.0),
-		"NO SAMPLES YET", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 12, Ui.MUTED)
+		"暂无采样", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 15, Ui.MUTED)
 	draw_string(Ui.MONO, Vector2(plot.position.x + 24.0, center.y + 16.0),
-		"connect live or open a CSV log", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 9, Ui.FAINT)
+		"连接实时仿真或打开 CSV 记录", HORIZONTAL_ALIGNMENT_LEFT, -1.0, 12, Ui.FAINT)
 
 
 func _draw_event_background(plot: Rect2, visible: Vector2) -> void:
@@ -465,8 +465,8 @@ func _draw_event_background(plot: Rect2, visible: Vector2) -> void:
 func _draw_strip(index: int, strip: Rect2, visible: Vector2, first_visible: int,
 		end_visible: int, stride: int) -> void:
 	var spec: Dictionary = PLOTS[index]
-	var label_size := 9 if compact else 10
-	var value_size := 11 if compact else 14
+	var label_size := 11 if compact else 12
+	var value_size := 13 if compact else 16
 	var plot := Rect2(strip.position, strip.size)
 	var low := _scale_min[index]
 	var high := _scale_max[index]
@@ -516,7 +516,7 @@ func _draw_strip(index: int, strip: Rect2, visible: Vector2, first_visible: int,
 			draw_polyline(points, series["color"], float(series["width"]), true)
 
 	var name_text := "%s  %s" % [str(spec["name"]), str(spec["unit"])]
-	draw_string(Ui.SANS_MEDIUM, Vector2(18.0, strip.position.y + 12.0), name_text,
+	draw_string(Ui.SANS_MEDIUM, Vector2(18.0, strip.position.y + 14.0), name_text,
 		HORIZONTAL_ALIGNMENT_LEFT, -1.0, label_size, Ui.MUTED)
 	draw_rect(Rect2(Vector2(10.0, strip.position.y + 6.0), Vector2(2.0, 8.0)),
 		series_color(spec), true)
@@ -524,7 +524,7 @@ func _draw_strip(index: int, strip: Rect2, visible: Vector2, first_visible: int,
 	var readout_time := _hover_time_s if _hover_time_s >= 0.0 else cursor_time_s
 	var readout_index := _sample_index_at(readout_time)
 	var value_x := 18.0
-	var value_y := strip.position.y + 24.0
+	var value_y := strip.position.y + 31.0
 	if not compact:
 		value_y = strip.position.y + 38.0
 	var series_list: Array = spec["series"]
@@ -550,19 +550,19 @@ func _draw_strip(index: int, strip: Rect2, visible: Vector2, first_visible: int,
 	if not compact:
 		var top_text := ("%+.2f" % high) if bool(spec["signed"]) else ("%.2f" % high)
 		var bottom_text := ("%+.2f" % low) if bool(spec["signed"]) else ("%.2f" % low)
-		draw_string(Ui.MONO, Vector2(plot.end.x - 54.0, plot.position.y + 10.0), top_text,
-			HORIZONTAL_ALIGNMENT_RIGHT, 50.0, 9, Ui.FAINT)
-		draw_string(Ui.MONO, Vector2(plot.end.x - 54.0, plot.end.y - 3.0), bottom_text,
-			HORIZONTAL_ALIGNMENT_RIGHT, 50.0, 9, Ui.FAINT)
+		draw_string(Ui.MONO, Vector2(plot.end.x - 60.0, plot.position.y + 12.0), top_text,
+			HORIZONTAL_ALIGNMENT_RIGHT, 56.0, 11, Ui.FAINT)
+		draw_string(Ui.MONO, Vector2(plot.end.x - 60.0, plot.end.y - 3.0), bottom_text,
+			HORIZONTAL_ALIGNMENT_RIGHT, 56.0, 11, Ui.FAINT)
 
 
 func _draw_axis(plot: Rect2, visible: Vector2) -> void:
-	var axis_y := plot.end.y + (9.0 if compact else 13.0)
+	var axis_y := plot.end.y + (10.0 if compact else 14.0)
 	draw_line(Vector2(plot.position.x, axis_y), Vector2(plot.end.x, axis_y), Ui.LINE, 1.0)
 	var span := maxf(visible.y - visible.x, 0.001)
 	var step := _nice_step(span / 6.0)
 	var tick := ceilf(visible.x / step) * step
-	var size := 9 if compact else 10
+	var size := 11 if compact else 12
 	while tick <= visible.y + 0.0001:
 		var x := _time_to_x(tick, visible, plot)
 		draw_line(Vector2(x, axis_y), Vector2(x, axis_y + 3.0), Ui.LINE_STRONG, 1.0)

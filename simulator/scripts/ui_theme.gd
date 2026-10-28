@@ -9,6 +9,7 @@ const SANS_SEMIBOLD := preload("res://assets/fonts/Barlow-SemiBold.ttf")
 const MONO := preload("res://assets/fonts/IBMPlexMono-Regular.ttf")
 const MONO_MEDIUM := preload("res://assets/fonts/IBMPlexMono-Medium.ttf")
 const MONO_SEMIBOLD := preload("res://assets/fonts/IBMPlexMono-SemiBold.ttf")
+const CJK := preload("res://assets/fonts/NotoSansSC.otf")
 
 const BG := Color("0b0e0c")
 const SURFACE := Color("121613")
@@ -34,6 +35,7 @@ const RADIUS := 10
 const RADIUS_SM := 6
 const PAD := 14
 const GAP := 12
+const FONT_SCALE := 1.25
 
 static var _theme: Theme
 
@@ -41,17 +43,22 @@ static var _theme: Theme
 static func theme() -> Theme:
 	if _theme != null:
 		return _theme
+	for font in [SANS, SANS_MEDIUM, SANS_SEMIBOLD, MONO, MONO_MEDIUM, MONO_SEMIBOLD]:
+		var fallbacks: Array[Font] = font.fallbacks
+		if not CJK in fallbacks:
+			fallbacks.append(CJK)
+			font.fallbacks = fallbacks
 
 	var built := Theme.new()
 	built.default_font = SANS
-	built.default_font_size = 13
+	built.default_font_size = 16
 
 	built.set_font("font", "Label", SANS)
-	built.set_font_size("font_size", "Label", 13)
+	built.set_font_size("font_size", "Label", 16)
 	built.set_color("font_color", "Label", TEXT)
 
 	built.set_font("font", "Button", SANS_MEDIUM)
-	built.set_font_size("font_size", "Button", 11)
+	built.set_font_size("font_size", "Button", 14)
 	built.set_color("font_color", "Button", TEXT_DIM)
 	built.set_color("font_hover_color", "Button", TEXT)
 	built.set_color("font_pressed_color", "Button", ACCENT)
@@ -65,7 +72,7 @@ static func theme() -> Theme:
 	built.set_constant("h_separation", "Button", 6)
 
 	built.set_font("font", "TooltipLabel", SANS)
-	built.set_font_size("font_size", "TooltipLabel", 12)
+	built.set_font_size("font_size", "TooltipLabel", 15)
 	built.set_color("font_color", "TooltipLabel", TEXT_DIM)
 	built.set_stylebox("panel", "TooltipPanel", flat(SURFACE_3, LINE_STRONG, RADIUS_SM, 1, 9.0, 7.0))
 
@@ -88,7 +95,7 @@ static func theme() -> Theme:
 	built.set_stylebox("normal", "LineEdit", flat(SURFACE_2, LINE, RADIUS_SM, 1, 9.0, 5.0))
 	built.set_stylebox("focus", "LineEdit", outline(ACCENT, RADIUS_SM, 9.0, 5.0))
 	built.set_font("font", "LineEdit", MONO)
-	built.set_font_size("font_size", "LineEdit", 12)
+	built.set_font_size("font_size", "LineEdit", 15)
 	built.set_color("font_color", "LineEdit", TEXT)
 	built.set_color("font_placeholder_color", "LineEdit", FAINT)
 	built.set_color("caret_color", "LineEdit", ACCENT)
@@ -145,7 +152,7 @@ static func label(text: String, size: int = 13, color: Color = TEXT) -> Label:
 	var node := Label.new()
 	node.text = text
 	node.add_theme_font_override("font", SANS)
-	node.add_theme_font_size_override("font_size", size)
+	node.add_theme_font_size_override("font_size", scaled_font_size(size))
 	node.add_theme_color_override("font_color", color)
 	return node
 
@@ -160,9 +167,13 @@ static func mono_label(text: String, size: int = 12, color: Color = TEXT, medium
 	var node := Label.new()
 	node.text = text
 	node.add_theme_font_override("font", MONO_MEDIUM if medium else MONO)
-	node.add_theme_font_size_override("font_size", size)
+	node.add_theme_font_size_override("font_size", scaled_font_size(size))
 	node.add_theme_color_override("font_color", color)
 	return node
+
+
+static func scaled_font_size(size: int) -> int:
+	return maxi(roundi(float(size) * FONT_SCALE), 1)
 
 
 static func section_header(text: String, hint: String = "") -> HBoxContainer:
@@ -206,7 +217,7 @@ static func button(text: String, kind: String = "ghost", height: float = 30.0) -
 		"danger":
 			_danger(node)
 		_:
-			node.add_theme_font_size_override("font_size", 10)
+			node.add_theme_font_size_override("font_size", scaled_font_size(10))
 	return node
 
 
@@ -217,7 +228,7 @@ static func toggle(text: String, height: float = 28.0) -> Button:
 	node.custom_minimum_size.y = height
 	node.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	node.focus_mode = Control.FOCUS_ALL
-	node.add_theme_font_size_override("font_size", 10)
+	node.add_theme_font_size_override("font_size", scaled_font_size(10))
 	return node
 
 
@@ -232,7 +243,7 @@ static func _primary(node: Button) -> void:
 	node.add_theme_color_override("font_pressed_color", Color("19140b"))
 	node.add_theme_color_override("font_focus_color", Color("19140b"))
 	node.add_theme_font_override("font", SANS_SEMIBOLD)
-	node.add_theme_font_size_override("font_size", 11)
+	node.add_theme_font_size_override("font_size", scaled_font_size(11))
 
 
 static func _quiet(node: Button) -> void:
@@ -242,7 +253,7 @@ static func _quiet(node: Button) -> void:
 	node.add_theme_stylebox_override("pressed", flat(SURFACE_3, Color(0, 0, 0, 0), RADIUS_SM, 0, 8.0, 4.0))
 	node.add_theme_color_override("font_color", MUTED)
 	node.add_theme_color_override("font_hover_color", TEXT)
-	node.add_theme_font_size_override("font_size", 10)
+	node.add_theme_font_size_override("font_size", scaled_font_size(10))
 
 
 static func _danger(node: Button) -> void:
@@ -251,7 +262,7 @@ static func _danger(node: Button) -> void:
 	node.add_theme_stylebox_override("pressed", flat(Color(DANGER, 0.28), DANGER, RADIUS_SM, 1, 12.0, 5.0))
 	node.add_theme_color_override("font_color", DANGER)
 	node.add_theme_color_override("font_hover_color", TEXT)
-	node.add_theme_font_size_override("font_size", 10)
+	node.add_theme_font_size_override("font_size", scaled_font_size(10))
 
 
 static func chip(text: String, color: Color = ACCENT, filled: bool = false) -> PanelContainer:

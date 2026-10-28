@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 
 def free_port() -> int:
@@ -22,8 +23,10 @@ def main() -> int:
         return 2
 
     port = free_port()
+    map_file = Path(__file__).resolve().parents[2] / "simulator" / "maps" / "oval.json"
     process = subprocess.Popen(
-        [sys.argv[1], "--port", str(port), "--duration", "1", "--seed", "23"],
+        [sys.argv[1], "--port", str(port), "--duration", "1", "--seed", "23",
+         "--map-file", str(map_file)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -55,9 +58,18 @@ def main() -> int:
                 raise RuntimeError(result.get("message", "live simulator error"))
             return result
 
+        def exchange_map(document: dict) -> dict:
+            payload = json.dumps(document, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            stream.write(f"MAPDATA {len(payload)}\n".encode("ascii") + payload + b"\n")
+            response = stream.readline()
+            if not response:
+                raise RuntimeError("live simulator closed without a MAPDATA response")
+            return json.loads(response)
+
         ready = json.loads(stream.readline())
         assert ready["event"] == "ready" and ready["protocol"] == 1
         assert ready["scenario"]["amp_m"] == 0.08
+        assert ready["map"]["name"] == "oval" and len(ready["map"]["segments"]) == 64
         reset = exchange("RESET 23 0.8 0 0 0.08 3.0 1.0")
         assert reset["event"] == "reset"
         first = exchange("STEP")
@@ -66,6 +78,7 @@ def main() -> int:
         assert len(first["gray_value"]) == 16
         assert len(first["gray_exist"]) == 16
         assert len(first["gray_valid"]) == 16
+        assert abs(first["lateral_error_m"]) < 0.01
         assert first["done"] is False
 
         exchange("RESET")
@@ -76,12 +89,43 @@ def main() -> int:
         while not last["done"]:
             last = exchange("STEP")
         assert last["t_us"] > first["t_us"]
+
+        parameter_reset = exchange("RESET 23 0.5 0.01 2 0.04 2.0 1.0 10.5")
+        assert parameter_reset["event"] == "reset"
+        adjusted = exchange("STEP")
+        assert adjusted["event"] == "state" and adjusted["t_us"] == 8000
+
+        replacement_map = {
+            "map_version": "1.0.0",
+            "name": "protocol_test",
+            "description": "测试地图",
+            "units_per_meter": 1,
+            "start": {"node": 1, "toward": 2},
+            "nodes": [[1, 0, 0], [2, 1, 0]],
+            "edges": [[1, 2]],
+        }
+        changed = exchange_map(replacement_map)
+        assert changed["event"] == "ready"
+        assert changed["map"]["name"] == "protocol_test"
+        assert len(changed["map"]["segments"]) == 1
+        assert changed["scenario"]["rail_v"] == 10.5
+        assert changed["scenario"]["v_desired_mps"] == 0.5
+        restarted = exchange("RESET")
+        assert restarted["event"] == "reset"
+        assert exchange("STEP")["t_us"] == 8000
+
+        map_error = exchange_map({})
+        assert map_error["event"] == "error"
+        assert exchange("HELLO")["map"]["name"] == "protocol_test"
+
         assert exchange("CLOSE")["event"] == "closed"
         connection.close()
         connection = None
         connection = socket.create_connection(("127.0.0.1", port), timeout=1.0)
         stream = connection.makefile("rwb", buffering=0)
-        assert json.loads(stream.readline())["event"] == "ready"
+        reconnected = json.loads(stream.readline())
+        assert reconnected["event"] == "ready"
+        assert reconnected["map"]["name"] == "protocol_test"
         stream.write(b"CLOSE\n")
         assert json.loads(stream.readline())["event"] == "closed"
         print("live simulator protocol: ok")
@@ -99,3 +143,7 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

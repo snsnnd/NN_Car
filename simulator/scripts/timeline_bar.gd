@@ -122,8 +122,8 @@ func _time_to_x(time_s: float) -> float:
 
 func _draw() -> void:
 	var inset := 10.0
-	var bar_y := 15.0
-	var bar_h := 7.0
+	var bar_y := 18.0
+	var bar_h := 8.0
 	var bar := Rect2(Vector2(inset, bar_y), Vector2(maxf(size.x - inset * 2.0, 4.0), bar_h))
 	draw_style_box(_bar_style, bar)
 
@@ -162,12 +162,12 @@ func _draw() -> void:
 
 	var tag_time := hover_time if hover_time >= 0.0 else cursor_s
 	var tag_text := "%0.3f s" % tag_time
-	var tag_width := 62.0
+	var tag_width := 78.0
 	var tag_x := clampf(_time_to_x(tag_time) - tag_width * 0.5, 0.0, size.x - tag_width)
-	var tag := Rect2(Vector2(tag_x, 0.0), Vector2(tag_width, 13.0))
+	var tag := Rect2(Vector2(tag_x, 0.0), Vector2(tag_width, 16.0))
 	draw_style_box(_cursor_tag, tag)
-	draw_string(Ui.MONO, Vector2(tag.position.x, 10.0), tag_text, HORIZONTAL_ALIGNMENT_CENTER,
-		tag_width, 8, Ui.TEXT_DIM)
+	draw_string(Ui.MONO, Vector2(tag.position.x, 12.0), tag_text, HORIZONTAL_ALIGNMENT_CENTER,
+		tag_width, 10, Ui.TEXT_DIM)
 
 
 func _notification(what: int) -> void:
