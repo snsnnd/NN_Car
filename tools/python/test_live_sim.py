@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 
 def free_port() -> int:
@@ -22,8 +23,10 @@ def main() -> int:
         return 2
 
     port = free_port()
+    map_file = Path(__file__).resolve().parents[2] / "simulator" / "maps" / "oval.json"
     process = subprocess.Popen(
-        [sys.argv[1], "--port", str(port), "--duration", "1", "--seed", "23"],
+        [sys.argv[1], "--port", str(port), "--duration", "1", "--seed", "23",
+         "--map-file", str(map_file)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -58,6 +61,7 @@ def main() -> int:
         ready = json.loads(stream.readline())
         assert ready["event"] == "ready" and ready["protocol"] == 1
         assert ready["scenario"]["amp_m"] == 0.08
+        assert ready["map"]["name"] == "oval" and len(ready["map"]["segments"]) == 64
         reset = exchange("RESET 23 0.8 0 0 0.08 3.0 1.0")
         assert reset["event"] == "reset"
         first = exchange("STEP")
@@ -66,6 +70,7 @@ def main() -> int:
         assert len(first["gray_value"]) == 16
         assert len(first["gray_exist"]) == 16
         assert len(first["gray_valid"]) == 16
+        assert abs(first["lateral_error_m"]) < 0.01
         assert first["done"] is False
 
         exchange("RESET")

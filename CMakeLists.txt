@@ -18,6 +18,7 @@ set(WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/motor_nn_weights.json)
 set(LINE_WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/line_nn_weights.json)
 set(DIRECT_WEIGHTS_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/motor_nn_direct.json)
 set(LINE_RESIDUAL_JSON ${CMAKE_CURRENT_SOURCE_DIR}/configs/line_nn_residual.json)
+set(NNCAR_LINE_R4_WEIGHTS "" CACHE FILEPATH "Optional trained SmartLine R4 weights JSON")
 file(MAKE_DIRECTORY ${GEN_DIR})
 
 add_custom_command(
@@ -68,6 +69,7 @@ add_library(nncar_core STATIC
   firmware/core/src/calib.c
   firmware/core/src/gray.c
   firmware/core/src/line.c
+  firmware/core/src/map.c
   firmware/core/src/mixer.c
   firmware/core/src/motor.c
   firmware/core/src/nn.c
@@ -85,8 +87,26 @@ target_include_directories(nncar_core PUBLIC firmware/core/include)
 target_compile_options(nncar_core PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
 target_link_libraries(nncar_core PUBLIC m)
 
+# R4 is opt-in so the frozen R3 model and its generated weights remain default.
+# Train/export a R4 JSON, then pass its path through NNCAR_LINE_R4_WEIGHTS.
+if(NNCAR_LINE_R4_WEIGHTS)
+  set(LINE_R4_C ${GEN_DIR}/nncar_line_r4_nn_generated.c)
+  add_custom_command(
+    OUTPUT ${LINE_R4_C}
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/gen_line_r4_nn.py
+            ${NNCAR_LINE_R4_WEIGHTS} ${LINE_R4_C}
+    DEPENDS ${NNCAR_LINE_R4_WEIGHTS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/gen_line_r4_nn.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/firmware/core/include/nncar/line.h
+    COMMENT "Generating experimental SmartLine R4 weights"
+    VERBATIM)
+  target_sources(nncar_core PRIVATE ${LINE_R4_C})
+  target_compile_definitions(nncar_core PRIVATE NNCAR_LINE_R4_MODEL_PRESENT=1)
+endif()
+
 add_library(nncar_host STATIC
   firmware/host/src/log_csv.c
+  firmware/host/src/map_file.c
   firmware/host/src/sim_runner.c)
 
 target_include_directories(nncar_host PUBLIC firmware/host/include)
@@ -134,6 +154,12 @@ foreach(t calib gray line mixer motor nn safety sim)
   target_link_libraries(test_${t} PRIVATE nncar_host)
   add_test(NAME ${t} COMMAND test_${t})
 endforeach()
+
+add_executable(test_map firmware/tests/test_map.c)
+target_include_directories(test_map PRIVATE firmware/tests)
+target_compile_options(test_map PRIVATE ${NNCAR_WARN} ${NNCAR_FP})
+target_link_libraries(test_map PRIVATE nncar_host)
+add_test(NAME map COMMAND test_map ${CMAKE_CURRENT_SOURCE_DIR}/simulator/maps/oval.json)
 
 add_test(NAME python_tools
          COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/python/selftest.py)

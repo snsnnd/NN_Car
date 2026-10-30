@@ -30,6 +30,12 @@ void nncar_stack_set_line_ctrl(nncar_stack_t *st, nncar_line_ctrl_t ctrl,
     nncar_line_set_ctrl(&st->line, ctrl, nn);
 }
 
+void nncar_stack_set_line_r4_ctrl(nncar_stack_t *st,
+                                  const nncar_line_r4_nn_t *nn)
+{
+    nncar_line_set_r4_ctrl(&st->line, nn);
+}
+
 static nncar_stack_output_t stack_step(nncar_stack_t *st,
                                        const nncar_profile_t *p,
                                        const nncar_stack_input_t *in,
@@ -55,14 +61,16 @@ static nncar_stack_output_t stack_step(nncar_stack_t *st,
 
         if (action == NULL) {
             const nncar_gray_frame_t frame = {gray_value, gray_exist, gray_valid};
-            st->twist = nncar_line_step(p, &st->line, &frame, &st->estimate,
-                                        in->v_desired, v_max_eff,
-                                        (float)in->now_us * 1.0e-6f, line_dt);
+            float v_current = 0.5f * (in->actual_left_mps + in->actual_right_mps);
+            st->twist = nncar_line_step_with_speed(
+                p, &st->line, &frame, &st->estimate, in->v_desired, v_current,
+                v_max_eff, (float)in->now_us * 1.0e-6f, line_dt);
         } else {
             const nncar_gray_frame_t frame = {gray_value, gray_exist, gray_valid};
-            nncar_twist_t recovery = nncar_line_step(
-                p, &st->line, &frame, &st->estimate, in->v_desired, v_max_eff,
-                (float)in->now_us * 1.0e-6f, line_dt);
+            float v_current = 0.5f * (in->actual_left_mps + in->actual_right_mps);
+            nncar_twist_t recovery = nncar_line_step_with_speed(
+                p, &st->line, &frame, &st->estimate, in->v_desired, v_current,
+                v_max_eff, (float)in->now_us * 1.0e-6f, line_dt);
             if (st->line.mode == NNCAR_LINE_RECOVERY) {
                 st->twist = recovery;
             } else {

@@ -34,6 +34,7 @@
               "heading_deg": {"type": "number"},
               "amp_m": {"type": "number"},
               "wavelength_m": {"type": "number", "exclusiveMinimum": 0},
+              "map_file": {"type": ["string", "null"]},
               "rail_v": {"type": "number", "exclusiveMinimum": 0},
               "line_width_m": {"type": "number", "exclusiveMinimum": 0},
               "motor_inertia_kgm2": {"type": "number", "exclusiveMinimum": 0},

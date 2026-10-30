@@ -124,6 +124,59 @@ int main(void)
         }
     }
 
+    /* Optional coupled body/tire plant is deterministic and keeps plant
+     * deadband independent of the controller profile. */
+    nncar_sim_t coupled_a;
+    nncar_sim_t coupled_b;
+    nncar_sim_init(&coupled_a, p, 0.0f, 0.0f, 0.0f, 12.0f);
+    nncar_sim_init(&coupled_b, p, 0.0f, 0.0f, 0.0f, 12.0f);
+    coupled_a.realistic_dynamics = true;
+    coupled_b.realistic_dynamics = true;
+    coupled_a.track_amp_m = coupled_b.track_amp_m = 0.04f;
+    coupled_a.track_wavelength_m = coupled_b.track_wavelength_m = 1.1f;
+    coupled_a.track_extra_amp_m[0] = coupled_b.track_extra_amp_m[0] = 0.01f;
+    coupled_a.track_extra_wavelength_m[0] = coupled_b.track_extra_wavelength_m[0] = 0.7f;
+    coupled_a.track_extra_phase_rad[0] = coupled_b.track_extra_phase_rad[0] = 0.4f;
+    float max_wheel_step = 0.0f;
+    float previous_wheel_speed = 0.0f;
+    for (int i = 0; i < 1000; ++i) {
+        nncar_sim_step(&coupled_a, p, (nncar_pwm_t){0.35f, 0.35f}, 0.002f);
+        nncar_sim_step(&coupled_b, p, (nncar_pwm_t){0.35f, 0.35f}, 0.002f);
+        max_wheel_step = fmaxf(max_wheel_step,
+                               fabsf(coupled_a.w_left - previous_wheel_speed));
+        previous_wheel_speed = coupled_a.w_left;
+    }
+    CHECK(coupled_a.x == coupled_b.x);
+    CHECK(coupled_a.y == coupled_b.y);
+    CHECK(coupled_a.theta == coupled_b.theta);
+    CHECK(coupled_a.body_v_mps > 0.0f);
+    CHECK(nncar_finite(coupled_a.body_v_mps));
+    CHECK(max_wheel_step < 4.0f);
+
+    nncar_sim_t low_deadband;
+    nncar_sim_t high_deadband;
+    nncar_sim_init(&low_deadband, p, 0.0f, 0.0f, 0.0f, 12.0f);
+    nncar_sim_init(&high_deadband, p, 0.0f, 0.0f, 0.0f, 12.0f);
+    low_deadband.realistic_dynamics = true;
+    high_deadband.realistic_dynamics = true;
+    low_deadband.plant_motor_deadband = 0.05f;
+    high_deadband.plant_motor_deadband = 0.25f;
+    for (int i = 0; i < 25; ++i) {
+        nncar_sim_step(&low_deadband, p, (nncar_pwm_t){0.2f, 0.2f}, 0.002f);
+        nncar_sim_step(&high_deadband, p, (nncar_pwm_t){0.2f, 0.2f}, 0.002f);
+    }
+    CHECK(low_deadband.w_left > 0.0f);
+    CHECK_NEAR(high_deadband.w_left, 0.0f, 1.0e-9f);
+
+    float path_y = 0.0f;
+    float path_dy = 0.0f;
+    float path_d2y = 0.0f;
+    nncar_sim_track_geometry(0.37f, &coupled_a, &path_y, &path_dy, &path_d2y);
+    float y_before = nncar_sim_track_y(0.37f - 1.0e-3f, &coupled_a);
+    float y_after = nncar_sim_track_y(0.37f + 1.0e-3f, &coupled_a);
+    CHECK_NEAR(path_dy, (y_after - y_before) / 2.0e-3f, 2.0e-3f);
+    CHECK(nncar_finite(path_y) && nncar_finite(path_d2y));
+
     /* RL policy hook replaces line output while retaining the C stack contract. */
     nncar_stack_t policy_stack;
     nncar_stack_init(&policy_stack, p);

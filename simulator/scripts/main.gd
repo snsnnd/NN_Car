@@ -35,6 +35,7 @@ var motor_dt_s := 0.002
 var profile_name := "mg513x_12v_4s_default"
 var profile_version := "1.0.0"
 var run_scenario: Dictionary = {}
+var active_map: Dictionary = {}
 var playback_time_s := 0.0
 var playback_speed := 1.0
 var current_index := 0
@@ -47,7 +48,6 @@ var camera_pitch := deg_to_rad(34.0)
 var camera_follow := true
 var orbit_dragging := false
 var pan_dragging := false
-var dashboard: Control
 var plot_dashboard: Control
 var plot_window: Window
 var plot_zoom_label: Label
@@ -298,6 +298,7 @@ func _send_live_command(command: String, kind: String) -> bool:
 func _handle_live_message(message: Dictionary) -> void:
 	var event := str(message.get("event", ""))
 	if event == "ready":
+		active_map = {}
 		var scenario: Variant = message.get("scenario", {})
 		if scenario is Dictionary:
 			live_scenario = scenario.duplicate(true)
@@ -305,9 +306,11 @@ func _handle_live_message(message: Dictionary) -> void:
 			track_amplitude_m = float(scenario.get("amp_m", 0.0))
 			track_wavelength_m = maxf(float(scenario.get("wavelength_m", 1.0)), 0.001)
 			live_duration_s = float(scenario.get("duration_s", 60.0))
-			track_start_x = -1.0
-			track_end_x = maxf(8.0, float(scenario.get("v_desired_mps", 0.8)) * live_duration_s * 1.2 + 3.0)
-			_create_track()
+			if active_map.is_empty():
+				track_start_x = -1.0
+				track_end_x = maxf(8.0, float(scenario.get("v_desired_mps", 0.8)) * live_duration_s * 1.2 + 3.0)
+		_set_active_map(message.get("map", {}))
+		_create_track()
 		live_profile_verified = bool(message.get("profile_verified", false))
 		line_dt_s = float(message.get("line_dt_s", 0.01))
 		motor_dt_s = float(message.get("motor_dt_s", 0.002))
@@ -331,9 +334,13 @@ func _handle_live_message(message: Dictionary) -> void:
 		play_button.text = "Pause"
 		time_slider.max_value = live_duration_s
 		time_slider.value = 0.0
-		_update_car({"x": 0.0, "y": 0.0, "theta": 0.0})
-		_set_dashboard_trace(trace, 0.0, live_duration_s)
-		_fit_plot_views()
+		_update_car({
+			"x": float(active_map.get("start_x_m", 0.0)),
+			"y": float(active_map.get("start_y_m", 0.0)),
+			"theta": float(active_map.get("start_theta_rad", 0.0))
+		})
+		_set_plot_trace(trace, 0.0, live_duration_s)
+		_fit_plot()
 		status_label.text = "LIVE · C fixed-step · profile_verified=%s" % str(live_profile_verified)
 	elif event == "state":
 		if live_outstanding_steps > 0:
@@ -352,7 +359,7 @@ func _handle_live_message(message: Dictionary) -> void:
 			time_slider.set_value_no_signal(minf(playback_time_s, live_duration_s))
 		_update_car(sample)
 		_update_hud(sample)
-		_set_dashboard_trace(trace, playback_time_s, maxf(playback_time_s, live_control_dt_s))
+		_set_plot_trace(trace, playback_time_s, maxf(playback_time_s, live_control_dt_s))
 		if trace.size() % 10 == 0:
 			_update_live_trajectory()
 		if bool(sample.get("done", false)):
@@ -453,7 +460,8 @@ func _save_trace(path: String) -> void:
 			"amp_m": float(scenario.get("amp_m", track_amplitude_m)),
 			"wavelength_m": float(scenario.get("wavelength_m", track_wavelength_m)),
 			"rail_v": float(scenario.get("rail_v", 12.0))
-		}
+		},
+		"map": active_map.duplicate(true) if not active_map.is_empty() else null
 	}
 	var manifest_file := FileAccess.open(csv_path.get_basename() + ".manifest.json", FileAccess.WRITE)
 	if manifest_file != null:
@@ -514,9 +522,46 @@ func _create_track() -> void:
 	track_root = Node3D.new()
 	track_root.name = "TrackAndTrajectory"
 	add_child(track_root)
-	_add_ribbon("TrackShoulder", 0.105, Color("bdc6c4"), 0.001)
-	_add_ribbon("TrackLine", track_line_width_m * 0.5, Color("17222a"), 0.004)
+	if active_map.is_empty():
+		_add_ribbon("TrackShoulder", 0.105, Color("bdc6c4"), 0.001)
+		_add_ribbon("TrackLine", track_line_width_m * 0.5, Color("17222a"), 0.004)
+	else:
+		_add_map_ribbon("TrackShoulder", 0.105, Color("bdc6c4"), 0.001)
+		_add_map_ribbon("TrackLine", track_line_width_m * 0.5, Color("17222a"), 0.004)
 	_add_trajectory()
+
+
+func _add_map_ribbon(node_name: String, half_width: float, tint: Color, lift: float) -> void:
+	var segments: Array = active_map.get("segments", [])
+	var vertices := PackedVector3Array()
+	var indices := PackedInt32Array()
+	for segment in segments:
+		if not segment is Array or segment.size() != 4:
+			continue
+		var start := _world_point(float(segment[0]), float(segment[1]), lift)
+		var finish := _world_point(float(segment[2]), float(segment[3]), lift)
+		var tangent := (finish - start).normalized()
+		var normal := Vector3(-tangent.z, 0.0, tangent.x)
+		var base := vertices.size()
+		vertices.append(start + normal * half_width)
+		vertices.append(start - normal * half_width)
+		vertices.append(finish + normal * half_width)
+		vertices.append(finish - normal * half_width)
+		indices.append_array(PackedInt32Array([base, base + 2, base + 1,
+			base + 1, base + 2, base + 3]))
+	if vertices.is_empty():
+		return
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var instance := MeshInstance3D.new()
+	instance.name = node_name
+	instance.mesh = mesh
+	instance.material_override = _material(tint, 0.0, 1.0)
+	track_root.add_child(instance)
 
 
 func _add_ribbon(node_name: String, half_width: float, tint: Color, lift: float) -> void:
@@ -604,17 +649,6 @@ func _create_car() -> void:
 func _create_hud() -> void:
 	var canvas := CanvasLayer.new()
 	add_child(canvas)
-	dashboard = load("res://scripts/telemetry_dashboard.gd").new() as Control
-	dashboard.anchor_left = 0.0
-	dashboard.anchor_top = 1.0
-	dashboard.anchor_right = 1.0
-	dashboard.anchor_bottom = 1.0
-	dashboard.offset_left = 12.0
-	dashboard.offset_top = -302.0
-	dashboard.offset_right = -12.0
-	dashboard.offset_bottom = -10.0
-	dashboard.mouse_filter = Control.MOUSE_FILTER_STOP
-	canvas.add_child(dashboard)
 	_create_plot_window()
 
 	var info_panel := PanelContainer.new()
@@ -651,9 +685,9 @@ func _create_hud() -> void:
 	transport_panel.anchor_right = 0.5
 	transport_panel.anchor_bottom = 1.0
 	transport_panel.offset_left = -570.0
-	transport_panel.offset_top = -378.0
+	transport_panel.offset_top = -82.0
 	transport_panel.offset_right = 570.0
-	transport_panel.offset_bottom = -306.0
+	transport_panel.offset_bottom = -10.0
 	transport_panel.add_theme_stylebox_override("panel", _panel_style())
 	canvas.add_child(transport_panel)
 	var row := HBoxContainer.new()
@@ -743,7 +777,7 @@ func _create_plot_window() -> void:
 	zoom_in_button.pressed.connect(func() -> void: plot_dashboard.zoom_in())
 	var fit_button := _add_button(toolbar, "Fit", Color("344550"))
 	fit_button.tooltip_text = "Fit the full run"
-	fit_button.pressed.connect(_fit_plot_views)
+	fit_button.pressed.connect(_fit_plot)
 	plot_zoom_label = Label.new()
 	plot_zoom_label.text = "FIT"
 	plot_zoom_label.custom_minimum_size.x = 58.0
@@ -760,15 +794,6 @@ func _create_plot_window() -> void:
 	plot_dashboard.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	plot_dashboard.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	layout.add_child(plot_dashboard)
-	dashboard.view_changed.connect(func() -> void: _sync_plot_views(dashboard, plot_dashboard))
-	plot_dashboard.view_changed.connect(func() -> void: _sync_plot_views(plot_dashboard, dashboard))
-
-
-func _sync_plot_views(source: Control, target: Control) -> void:
-	if not is_instance_valid(source) or not is_instance_valid(target):
-		return
-	target.apply_view_state(source.get_view_state())
-	_update_plot_zoom_label()
 
 
 func _update_plot_zoom_label() -> void:
@@ -776,19 +801,16 @@ func _update_plot_zoom_label() -> void:
 		plot_zoom_label.text = plot_dashboard.get_zoom_label()
 
 
-func _set_dashboard_trace(rows: Array[Dictionary], cursor_s: float, duration_s: float) -> void:
-	dashboard.set_trace(rows, cursor_s, duration_s)
+func _set_plot_trace(rows: Array[Dictionary], cursor_s: float, duration_s: float) -> void:
 	plot_dashboard.set_trace(rows, cursor_s, duration_s)
 	_update_plot_zoom_label()
 
 
-func _set_dashboard_cursor(cursor_s: float) -> void:
-	dashboard.set_cursor(cursor_s)
+func _set_plot_cursor(cursor_s: float) -> void:
 	plot_dashboard.set_cursor(cursor_s)
 
 
-func _fit_plot_views() -> void:
-	dashboard.fit_trace()
+func _fit_plot() -> void:
 	plot_dashboard.fit_trace()
 	_update_plot_zoom_label()
 
@@ -933,13 +955,14 @@ func _load_trace(path: String) -> void:
 	_prepare_plot_fields()
 	_create_track()
 	_frame_trace()
-	_set_dashboard_trace(trace, playback_time_s, _duration_s())
-	_fit_plot_views()
+	_set_plot_trace(trace, playback_time_s, _duration_s())
+	_fit_plot()
 	_update_playback()
 	status_label.text = "%s samples  ·  %s" % [str(trace.size()), path.get_file()]
 
 
 func _load_manifest(csv_path: String) -> void:
+	active_map = {}
 	track_amplitude_m = 0.0
 	track_wavelength_m = 1.0
 	track_line_width_m = 0.02
@@ -964,6 +987,7 @@ func _load_manifest(csv_path: String) -> void:
 	var simulation: Variant = parsed.get("simulation", {})
 	if simulation is Dictionary:
 		track_line_width_m = maxf(float(simulation.get("line_width_m", 0.02)), 0.001)
+	_set_active_map(parsed.get("map", {}))
 	line_dt_s = float(parsed.get("line_dt_s", line_dt_s))
 	motor_dt_s = float(parsed.get("tick_dt_s", motor_dt_s))
 	profile_name = str(parsed.get("profile", profile_name))
@@ -978,11 +1002,13 @@ func _prepare_plot_fields() -> void:
 		var sample: Dictionary = trace[index]
 		var time_us := float(sample.get("t_us", 0))
 		var x := float(sample.get("x", 0.0))
+		var y := float(sample.get("y", 0.0))
 		var theta := float(sample.get("theta", 0.0))
+		var reference := _track_reference(x, y)
 		var lateral := float(sample.get("lateral_error_m",
-			float(sample.get("y", 0.0)) - _track_y(x)))
+		reference.x))
 		var heading := float(sample.get("heading_error_rad",
-			wrapf(theta - _track_heading(x), -PI, PI)))
+			wrapf(theta - reference.y, -PI, PI)))
 		var actual_speed := 0.5 * (float(sample.get("wheel_v_l", 0.0)) +
 			float(sample.get("wheel_v_r", 0.0)))
 		var actual_omega := 0.0
@@ -1017,7 +1043,7 @@ func _update_playback() -> void:
 	var sample := _sample_at(playback_time_s)
 	_update_car(sample)
 	_update_hud(sample)
-	_set_dashboard_cursor(playback_time_s)
+	_set_plot_cursor(playback_time_s)
 
 
 func _sample_at(time_s: float) -> Dictionary:
@@ -1098,7 +1124,7 @@ func _update_hud(sample: Dictionary) -> void:
 		return
 
 	var actual_speed := 0.5 * (float(sample.wheel_v_l) + float(sample.wheel_v_r))
-	var lateral_error := float(sample.y) - _track_y(float(sample.x))
+	var lateral_error := _track_reference(float(sample.x), float(sample.y)).x
 	time_label.text = "TIME          %0.3f s   /   %0.2f×" % [playback_time_s, playback_speed]
 	speed_label.text = "SPEED         %0.3f → %0.3f m/s" % [float(sample.v_target), actual_speed]
 	line_label.text = "LINE          conf %0.2f   ·   found %d" % [float(sample.line_conf), int(sample.line_found)]
@@ -1206,9 +1232,24 @@ func _frame_trace() -> void:
 	camera_follow = false
 	camera_yaw = 0.0
 	camera_pitch = deg_to_rad(55.0)
-	var middle_x := 0.5 * (track_start_x + track_end_x)
-	camera_target = _world_point(middle_x, _track_y(middle_x), 0.0)
-	camera_distance = maxf(4.5, (track_end_x - track_start_x) * 1.15)
+	if not active_map.is_empty():
+		var minimum_x := INF
+		var maximum_x := -INF
+		var minimum_y := INF
+		var maximum_y := -INF
+		for segment in active_map.get("segments", []):
+			minimum_x = minf(minimum_x, minf(float(segment[0]), float(segment[2])))
+			maximum_x = maxf(maximum_x, maxf(float(segment[0]), float(segment[2])))
+			minimum_y = minf(minimum_y, minf(float(segment[1]), float(segment[3])))
+			maximum_y = maxf(maximum_y, maxf(float(segment[1]), float(segment[3])))
+		camera_target = _world_point((minimum_x + maximum_x) * 0.5,
+			(minimum_y + maximum_y) * 0.5, 0.0)
+		camera_distance = maxf(4.5, maxf(maximum_x - minimum_x,
+			maximum_y - minimum_y) * 1.8)
+	else:
+		var middle_x := 0.5 * (track_start_x + track_end_x)
+		camera_target = _world_point(middle_x, _track_y(middle_x), 0.0)
+		camera_distance = maxf(4.5, (track_end_x - track_start_x) * 1.15)
 
 
 func _reset_camera() -> void:
@@ -1239,11 +1280,53 @@ func _track_y(x: float) -> float:
 	return track_amplitude_m * sin(TAU * x / track_wavelength_m)
 
 
-func _track_heading(x: float) -> float:
+func _track_reference(x: float, y: float) -> Vector2:
+	if not active_map.is_empty():
+		var best_distance_squared := INF
+		var best_lateral := 0.0
+		var best_heading := 0.0
+		for segment in active_map.get("segments", []):
+			var x0 := float(segment[0])
+			var y0 := float(segment[1])
+			var dx := float(segment[2]) - x0
+			var dy := float(segment[3]) - y0
+			var length_squared := dx * dx + dy * dy
+			if length_squared <= 0.000000000001:
+				continue
+			var ratio := clampf(((x - x0) * dx + (y - y0) * dy) / length_squared, 0.0, 1.0)
+			var error_x := x - (x0 + ratio * dx)
+			var error_y := y - (y0 + ratio * dy)
+			var distance_squared := error_x * error_x + error_y * error_y
+			if distance_squared < best_distance_squared:
+				best_distance_squared = distance_squared
+				best_lateral = (dx * error_y - dy * error_x) / sqrt(length_squared)
+				best_heading = atan2(dy, dx)
+		return Vector2(best_lateral, best_heading)
 	if is_zero_approx(track_amplitude_m):
-		return 0.0
+		return Vector2(y, 0.0)
 	var slope := track_amplitude_m * (TAU / track_wavelength_m) * cos(TAU * x / track_wavelength_m)
-	return atan(slope)
+	return Vector2(y - _track_y(x), atan(slope))
+
+
+func _set_active_map(map_data: Variant) -> void:
+	active_map = {}
+	if not map_data is Dictionary:
+		return
+	var segments: Variant = map_data.get("segments", [])
+	if not segments is Array or segments.is_empty():
+		return
+	active_map = map_data.duplicate(true)
+	track_line_width_m = maxf(float(active_map.get("line_width_m", track_line_width_m)), 0.001)
+	var minimum_x := INF
+	var maximum_x := -INF
+	for segment in segments:
+		if not segment is Array or segment.size() != 4:
+			active_map = {}
+			return
+		minimum_x = minf(minimum_x, minf(float(segment[0]), float(segment[2])))
+		maximum_x = maxf(maximum_x, maxf(float(segment[0]), float(segment[2])))
+	track_start_x = minimum_x - 0.5
+	track_end_x = maximum_x + 0.5
 
 
 func _world_point(sim_x: float, sim_y: float, height: float = 0.0) -> Vector3:

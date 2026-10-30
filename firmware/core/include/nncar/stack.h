@@ -68,6 +68,10 @@ void nncar_stack_set_motor_mode(nncar_stack_t *st, nncar_motor_mode_t mode,
 void nncar_stack_set_line_ctrl(nncar_stack_t *st, nncar_line_ctrl_t ctrl,
                                const nncar_line_nn_t *nn);
 
+/* Experimental R4 selector; a NULL model preserves the PID safe fallback. */
+void nncar_stack_set_line_r4_ctrl(nncar_stack_t *st,
+                                  const nncar_line_r4_nn_t *nn);
+
 nncar_stack_output_t nncar_stack_step(nncar_stack_t *st,
                                       const nncar_profile_t *p,
                                       const nncar_stack_input_t *in,

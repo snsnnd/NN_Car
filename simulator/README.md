@@ -41,6 +41,26 @@ The run folder can be opened in Godot by loading one of its CSV files.
 The plan format is described by
 [`tools/schema/experiment_plan.schema.json`](../tools/schema/experiment_plan.schema.json).
 
+## Track-map adapter
+
+Pass a JSON map at runtime; adding a map does not require changing or rebuilding the C
+simulator. The shared format uses `[id, x, y]` nodes, directed `[from, to]` line-segment
+edges, a start node and an optional next node or heading, `units_per_meter`, and
+`line_width_m`. Edge order defines the positive side and reference heading; close a loop
+with an edge back to the first node. `simulator/maps/oval.json` is a
+closed oval example. The file contract is documented in
+[`tools/schema/track_map.schema.json`](../tools/schema/track_map.schema.json):
+
+```bash
+build/nncar_sim --map-file simulator/maps/oval.json --duration 24 --v 0.4
+bash simulator/run_demo.sh --map-file simulator/maps/oval.json --v 0.4
+```
+
+Experiment plans accept the same `map_file` scenario field. The C sensor and error
+calculations load the map directly, while CSV manifests preserve its geometry for
+Godot replay. To add a track, create a map JSON in the same format and pass its path.
+The existing analytic straight/S-curve scenarios remain available when no map is given.
+
 Examples:
 
 ```bash
@@ -78,7 +98,7 @@ playback; older logs remain loadable but cannot show per-sensor state.
 - **Save**: write the current live/replay samples to CSV plus a matching manifest.
 - **Charts ↗**: open the synchronized waveforms in a separate native window. Use the
   window's `+`/`−` or mouse wheel to zoom the time axis, middle-drag to pan, and **Fit**
-  to restore the full run. The overview and detached window share zoom and cursor state.
+  to restore the full run. Waveforms are shown only in this separate window.
 - **F11**: toggle fullscreen.
 - **Right-drag**: orbit; mouse wheel: zoom; **middle-drag**: pan.
 - **F**: toggle follow/free camera; **V**: frame the full track; **0**: reset the follow view.

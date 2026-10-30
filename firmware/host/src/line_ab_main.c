@@ -14,7 +14,8 @@ typedef enum {
     SRC_MLP = 1,
     SRC_ORACLE = 2,
     SRC_RESIDUAL = 3,
-    SRC_INT8 = 4
+    SRC_INT8 = 4,
+    SRC_R4 = 5
 } src_t;
 
 typedef struct {
@@ -31,6 +32,14 @@ typedef struct {
     int missing_a;
     int missing_b;
     float valid_prob;
+    float sensor_width_scale;
+    float inertia_scale;
+    float plant_deadband;
+    float body_mass_scale;
+    float yaw_inertia_scale;
+    float grip_scale;
+    bool random_track;
+    uint32_t track_seed;
 } scenario_t;
 
 typedef struct {
@@ -50,14 +59,14 @@ typedef struct {
 
 /* Pre-declared A/B suite: clean, curves, speed, and sensor perturbations. */
 static const scenario_t k_suite[] = {
-    {"straight", 0.00f, 1.60f, 0.020f, 3.0f, 0.90f, 12.0f, 0.00f, 0.00f, 0.00f, -1, -1, 1.00f},
-    {"gentle_s", 0.08f, 1.60f, 0.010f, 0.0f, 0.90f, 12.0f, 0.00f, 0.00f, 0.00f, -1, -1, 1.00f},
-    {"sharp_s", 0.12f, 0.90f, 0.000f, 0.0f, 0.60f, 12.0f, 0.00f, 0.00f, 0.00f, -1, -1, 1.00f},
-    {"fast_gentle", 0.06f, 1.60f, 0.010f, 1.5f, 1.20f, 12.0f, 0.00f, 0.00f, 0.00f, -1, -1, 1.00f},
-    {"noise", 0.08f, 1.60f, 0.010f, 0.0f, 0.90f, 12.0f, 0.08f, 0.12f, 0.05f, -1, -1, 1.00f},
-    {"dropout", 0.08f, 1.60f, 0.010f, 0.0f, 0.90f, 12.0f, 0.02f, 0.00f, 0.00f, 2, 5, 0.90f},
-    {"rail_sag", 0.10f, 1.20f, 0.000f, 0.0f, 0.75f, 11.0f, 0.00f, 0.00f, 0.00f, -1, -1, 1.00f},
-    {"disturbance", 0.00f, 1.60f, 0.030f, 5.0f, 1.20f, 12.0f, 0.00f, 0.00f, 0.00f, -1, -1, 1.00f},
+    {"straight", 0.00f, 1.60f, 0.020f, 3.0f, 0.90f, 12.0f, 0.00f, 0.00f, 0.00f, -1, -1, 1.00f, 1.00f, 1.00f, -1.0f, 1.0f, 1.0f, 1.0f, false, 0u},
+    {"gentle_s", 0.08f, 1.60f, 0.010f, 0.0f, 0.90f, 12.0f, 0.00f, 0.00f, 0.00f, -1, -1, 1.00f, 1.00f, 1.00f, -1.0f, 1.0f, 1.0f, 1.0f, false, 0u},
+    {"sharp_s", 0.12f, 0.90f, 0.000f, 0.0f, 0.60f, 12.0f, 0.00f, 0.00f, 0.00f, -1, -1, 1.00f, 1.00f, 1.00f, -1.0f, 1.0f, 1.0f, 1.0f, false, 0u},
+    {"fast_gentle", 0.06f, 1.60f, 0.010f, 1.5f, 1.20f, 12.0f, 0.00f, 0.00f, 0.00f, -1, -1, 1.00f, 1.00f, 1.00f, -1.0f, 1.0f, 1.0f, 1.0f, false, 0u},
+    {"noise", 0.08f, 1.60f, 0.010f, 0.0f, 0.90f, 12.0f, 0.08f, 0.12f, 0.05f, -1, -1, 1.00f, 1.00f, 1.00f, -1.0f, 1.0f, 1.0f, 1.0f, false, 0u},
+    {"dropout", 0.08f, 1.60f, 0.010f, 0.0f, 0.90f, 12.0f, 0.02f, 0.00f, 0.00f, 2, 5, 0.90f, 1.00f, 1.00f, -1.0f, 1.0f, 1.0f, 1.0f, false, 0u},
+    {"rail_sag", 0.10f, 1.20f, 0.000f, 0.0f, 0.75f, 11.0f, 0.00f, 0.00f, 0.00f, -1, -1, 1.00f, 1.00f, 1.00f, -1.0f, 1.0f, 1.0f, 1.0f, false, 0u},
+    {"disturbance", 0.00f, 1.60f, 0.030f, 5.0f, 1.20f, 12.0f, 0.00f, 0.00f, 0.00f, -1, -1, 1.00f, 1.00f, 1.00f, -1.0f, 1.0f, 1.0f, 1.0f, false, 0u},
 };
 #define SUITE_COUNT ((int)(sizeof(k_suite) / sizeof(k_suite[0])))
 
@@ -73,7 +82,7 @@ static void metrics_init(metrics_t *m)
 static void metrics_add(metrics_t *m, const nncar_sim_t *s, float omega, float v_cmd,
                         bool line_tick, float t_s, float dt)
 {
-    float lat = s->y - nncar_sim_track_y(s->x, s);
+    float lat = nncar_sim_lateral_error(s);
 
     if (t_s < SETTLE_S) {
         return;
@@ -135,14 +144,60 @@ static void apply_scenario(nncar_sim_t *s, const scenario_t *sc, uint32_t seed)
 
     s->track_amp_m = sc->amp_m;
     s->track_wavelength_m = sc->wavelength_m;
+    s->track_extra_amp_m[0] = 0.0f;
+    s->track_extra_amp_m[1] = 0.0f;
+    s->realistic_dynamics = true;
     s->v_rail = sc->rail_v;
 
     s->gray_noise_std = sc->noise_std;
+    s->gray_width_scale = sc->sensor_width_scale;
+    if (sc->plant_deadband >= 0.0f) {
+        s->plant_motor_deadband = sc->plant_deadband;
+    }
+    if (sc->inertia_scale > 0.0f) {
+        s->inertia_kgm2 *= sc->inertia_scale;
+    }
+    if (sc->body_mass_scale > 0.0f) {
+        s->body_mass_kg *= sc->body_mass_scale;
+    }
+    if (sc->yaw_inertia_scale > 0.0f) {
+        s->yaw_inertia_kgm2 *= sc->yaw_inertia_scale;
+    }
+    if (sc->grip_scale > 0.0f) {
+        s->tire_mu *= sc->grip_scale;
+    }
     s->gray_offset = sc->offset_bias;
     s->gray_valid_prob = sc->valid_prob;
     for (int i = 0; i < NNCAR_MAX_SENSORS; ++i) {
         s->gray_gain[i] = 1.0f + ((i % 2 == 0) ? sc->gain_bias : -sc->gain_bias);
         s->gray_missing[i] = (uint8_t)((i == sc->missing_a || i == sc->missing_b) ? 1u : 0u);
+    }
+
+    if (sc->random_track) {
+        uint32_t state = (sc->track_seed != 0u) ? sc->track_seed : seed;
+        for (int i = 0; i < 2; ++i) {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            float u0 = (float)(state >> 8) * (1.0f / 16777216.0f);
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            float u1 = (float)(state >> 8) * (1.0f / 16777216.0f);
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            float u2 = (float)(state >> 8) * (1.0f / 16777216.0f);
+
+            s->track_extra_amp_m[i] = 0.006f + 0.015f * u0;
+            s->track_extra_wavelength_m[i] = 0.8f + 1.2f * u1;
+            s->track_extra_phase_rad[i] = 2.0f * NNCAR_PI * u2;
+        }
+        float y = 0.0f;
+        float slope = 0.0f;
+        nncar_sim_track_geometry(s->x, s, &y, &slope, NULL);
+        s->y = y + sc->offset_m;
+        s->theta = atanf(slope) + sc->heading_deg * NNCAR_PI / 180.0f;
     }
 }
 
@@ -152,9 +207,11 @@ static void apply_scenario(nncar_sim_t *s, const scenario_t *sc, uint32_t seed)
  * the true pose, so it is only a teacher / upper bound, never a shipped
  * controller. The same kinematic envelope as the shipped path is applied.
  */
-static float k_oracle_ke = 80.0f;     /* 1/m^2, lateral error gain */
-static float k_oracle_ktheta = 10.0f; /* 1/m, heading error gain */
+/* Gains tuned against the opt-in coupled body/tire host plant. */
+static float k_oracle_ke = 400.0f;    /* 1/m^2, lateral error gain */
+static float k_oracle_ktheta = 120.0f; /* 1/m, heading error gain */
 static float k_oracle_alat = 0.85f;   /* fraction of a_lat_max for the speed cap */
+static float k_r4_alpha_ratio = 0.0f;  /* 0 uses the profile's R4 residual scale */
 static bool k_trace = false;
 static int k_trace_index = -1;
 
@@ -162,12 +219,10 @@ static void oracle_cmd(const nncar_profile_t *p, const nncar_sim_t *s,
                        float v_desired, float v_max_eff, nncar_twist_t *out,
                        float *kappa_out)
 {
-    const float amp = s->track_amp_m;
-    const float w = 2.0f * NNCAR_PI / s->track_wavelength_m;
-
-    const float y_p = amp * sinf(w * s->x);
-    const float yp = amp * w * cosf(w * s->x);
-    const float ypp = -amp * w * w * sinf(w * s->x);
+    float y_p = 0.0f;
+    float yp = 0.0f;
+    float ypp = 0.0f;
+    nncar_sim_track_geometry(s->x, s, &y_p, &yp, &ypp);
 
     const float theta_path = atanf(yp);
     const float e_lat = s->y - y_p;   /* + = vehicle left of the line */
@@ -239,14 +294,67 @@ static void dump_pair(FILE *dump, const nncar_profile_t *p,
     }
 }
 
+/* R4 row: 7 inputs, 2 control targets, 2 privileged labels, 1 PD baseline. */
+#define DUMP_R4_ROW 12
+
+static void dump_r4_pair(FILE *dump, const nncar_profile_t *p,
+                         const nncar_gray_frame_t *frame,
+                         const nncar_line_estimate_t *est,
+                         const nncar_line_state_t *line_state,
+                         nncar_line_r4_state_t *r4_state,
+                         const nncar_sim_t *sim,
+                         float v_current,
+                         float v_desired,
+                         float v_max_eff,
+                         nncar_twist_t teacher,
+                         float current_omega)
+{
+    float row[DUMP_R4_ROW];
+    float x[NNCAR_LINE_R4_INPUT_DIM];
+    nncar_line_r4_input(p, frame, r4_state, v_current, p->line_dt_s, x);
+    memcpy(row, x, sizeof(x));
+
+    float base_omega = 0.0f;
+    if (est->confidence >= p->conf_nn_min && est->valid_count >= p->conf_valid_min) {
+        base_omega = p->pid_kp * est->centroid_m + p->pid_kd * line_state->d_filtered;
+    }
+    float alpha_ratio = (k_r4_alpha_ratio > 0.0f) ? k_r4_alpha_ratio
+                                                   : p->line_kappa_alpha;
+    float alpha_omega = fmaxf(alpha_ratio * p->omega_ref_radps, 1.0e-3f);
+    row[7] = nncar_clampf((teacher.omega - base_omega) / alpha_omega, -0.96f, 0.96f);
+    row[11] = nncar_clampf(base_omega / fmaxf(p->omega_ref_radps, 1.0e-3f), -1.0f, 1.0f);
+
+    float v_hi = fminf(fmaxf(v_desired, 0.0f), fmaxf(v_max_eff, 0.0f));
+    float v_lo = fminf(fmaxf(p->v_min_kappa_mps, 0.0f), v_hi);
+    float gamma = (v_hi > v_lo + 1.0e-6f)
+                      ? nncar_clampf((teacher.v - v_lo) / (v_hi - v_lo), 0.0f, 1.0f)
+                      : 0.5f;
+    row[8] = 2.0f * gamma - 1.0f;
+
+    row[9] = nncar_clampf(nncar_sim_lateral_error(sim) /
+                              fmaxf(p->position_ref_m, 1.0e-3f),
+                          -1.0f, 1.0f);
+    float yp = 0.0f;
+    float ypp = 0.0f;
+    nncar_sim_track_geometry(sim->x, sim, NULL, &yp, &ypp);
+    float kappa_true = ypp / powf(1.0f + yp * yp, 1.5f);
+    row[10] = nncar_clampf(kappa_true / fmaxf(p->kappa_ref, 1.0e-3f), -1.0f, 1.0f);
+
+    if (fwrite(row, sizeof(row), 1, dump) != 1) {
+        /* Write errors are surfaced by the caller through ferror(). */
+    }
+    r4_state->prev_omega = current_omega;
+}
+
 /*
  * Shipped-controller run through the real stack (line -> mixer -> safety ->
  * motors). With dump != NULL the visited states are labelled by the oracle,
  * which is how off-policy DAgger-style data is produced.
  */
 static void run_stack(const nncar_profile_t *p, const scenario_t *sc, src_t src,
-                      const nncar_line_nn_t *nn, uint32_t seed, metrics_t *m,
-                      FILE *dump)
+                      const nncar_line_nn_t *nn,
+                      const nncar_line_r4_nn_t *r4_nn,
+                      uint32_t seed, metrics_t *m, FILE *dump, FILE *r4_dump)
 {
     nncar_sim_t sim;
     float x0 = 0.0f;
@@ -265,7 +373,11 @@ static void run_stack(const nncar_profile_t *p, const scenario_t *sc, src_t src,
     } else if (src == SRC_INT8) {
         ctrl = NNCAR_LINE_CTRL_MLP_INT8;
     }
-    nncar_stack_set_line_ctrl(&stack, ctrl, (src == SRC_PID) ? NULL : nn);
+    if (src == SRC_R4) {
+        nncar_stack_set_line_r4_ctrl(&stack, r4_nn);
+    } else {
+        nncar_stack_set_line_ctrl(&stack, ctrl, (src == SRC_PID) ? NULL : nn);
+    }
 
     nncar_velocity_t vel_l;
     nncar_velocity_t vel_r;
@@ -282,6 +394,7 @@ static void run_stack(const nncar_profile_t *p, const scenario_t *sc, src_t src,
     float v_r = 0.0f;
     uint64_t now_us = 0;
     bool edges = false;
+    nncar_line_r4_state_t r4_state = {0.0f, 0.0f, 0.0f, false};
 
     for (int k = 0; k < ticks; ++k) {
         float gray_value[NNCAR_MAX_SENSORS];
@@ -338,13 +451,25 @@ static void run_stack(const nncar_profile_t *p, const scenario_t *sc, src_t src,
                       kappa_pid);
         }
 
+        if (r4_dump != NULL && line_tick) {
+            const nncar_gray_frame_t frame = {gray_value, gray_exist, gray_valid};
+            nncar_twist_t label = {0.0f, 0.0f};
+            float kappa = 0.0f;
+            float v_max_eff = nncar_v_max_eff(p, sim.v_rail);
+            oracle_cmd(p, &sim, sc->v_desired, v_max_eff, &label, &kappa);
+            (void)kappa;
+            dump_r4_pair(r4_dump, p, &frame, &out.line, &stack.line, &r4_state,
+                         &sim, 0.5f * (v_l + v_r), sc->v_desired, v_max_eff,
+                         label, out.twist.omega);
+        }
+
         now_us += dt_us;
     }
 }
 
 /* Oracle run: the same execution stage, with a ground-truth twist source. */
 static void run_oracle(const nncar_profile_t *p, const scenario_t *sc, uint32_t seed,
-                       metrics_t *m, FILE *dump)
+                       metrics_t *m, FILE *dump, FILE *r4_dump)
 {
     nncar_sim_t sim;
     float x0 = 0.0f;
@@ -394,6 +519,7 @@ static void run_oracle(const nncar_profile_t *p, const scenario_t *sc, uint32_t 
     bool edges = false;
     float twist_age = 0.0f;
     float last_kappa = 0.0f;
+    nncar_line_r4_state_t r4_state = {0.0f, 0.0f, 0.0f, false};
 
     for (int k = 0; k < ticks; ++k) {
         float gray_value[NNCAR_MAX_SENSORS];
@@ -414,13 +540,20 @@ static void run_oracle(const nncar_profile_t *p, const scenario_t *sc, uint32_t 
             wheels = nncar_mixer(p, twist, v_max_eff).wheels;
             twist_age = 0.0f;
 
-            if (dump != NULL) {
+            if (dump != NULL || r4_dump != NULL) {
                 const nncar_gray_frame_t frame = {gray_value, gray_exist, gray_valid};
                 nncar_line_history_update(p, &shadow, &est, p->line_dt_s);
-                const float kappa_pid = nncar_line_pid_kappa(p, &shadow, &est,
-                                                             sc->v_desired, v_max_eff);
-                dump_pair(dump, p, &frame, &est, sc->v_desired, twist.v, kappa,
-                          kappa_pid);
+                if (dump != NULL) {
+                    const float kappa_pid = nncar_line_pid_kappa(p, &shadow, &est,
+                                                                 sc->v_desired, v_max_eff);
+                    dump_pair(dump, p, &frame, &est, sc->v_desired, twist.v, kappa,
+                              kappa_pid);
+                }
+                if (r4_dump != NULL) {
+                    dump_r4_pair(r4_dump, p, &frame, &est, &shadow, &r4_state,
+                                 &sim, 0.5f * (v_l + v_r), sc->v_desired,
+                                 v_max_eff, twist, twist.omega);
+                }
             }
         }
 
@@ -494,13 +627,15 @@ static void run_oracle(const nncar_profile_t *p, const scenario_t *sc, uint32_t 
 }
 
 static void run_one(const nncar_profile_t *p, const scenario_t *sc, src_t src,
-                    const nncar_line_nn_t *nn, uint32_t seed, metrics_t *m, FILE *dump)
+                    const nncar_line_nn_t *nn,
+                    const nncar_line_r4_nn_t *r4_nn,
+                    uint32_t seed, metrics_t *m, FILE *dump, FILE *r4_dump)
 {
     metrics_init(m);
     if (src == SRC_ORACLE) {
-        run_oracle(p, sc, seed, m, dump);
+        run_oracle(p, sc, seed, m, dump, r4_dump);
     } else {
-        run_stack(p, sc, src, nn, seed, m, dump);
+        run_stack(p, sc, src, nn, r4_nn, seed, m, dump, r4_dump);
     }
 }
 
@@ -514,13 +649,125 @@ static float aggregate(const metrics_t *m)
     return sqrtf(sum_sq / (float)SUITE_COUNT);
 }
 
-/* Randomised episodes for teacher data: on-policy oracle plus off-policy PID. */
-static void dump_teacher(const nncar_profile_t *p, const char *path, int episodes,
-                         uint32_t seed)
+static float eval_random_unit(uint32_t *state)
 {
-    FILE *fp = fopen(path, "wb");
-    if (fp == NULL) {
-        fprintf(stderr, "cannot open %s\n", path);
+    uint32_t x = (*state != 0u) ? *state : 0x9e3779b9u;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return (float)(x >> 8) * (1.0f / 16777216.0f);
+}
+
+static void make_random_eval_case(const nncar_profile_t *base, uint32_t seed,
+                                  int episode, nncar_profile_t *profile,
+                                  scenario_t *sc)
+{
+    uint32_t rng = seed ^ ((uint32_t)(episode + 1) * 0x85ebca6bu);
+    float u[18];
+    for (int i = 0; i < 18; ++i) {
+        u[i] = eval_random_unit(&rng);
+    }
+
+    *profile = *base;
+    static const int counts[4] = {5, 6, 7, 8};
+    profile->sensor_count = counts[(episode + (int)(u[0] * 4.0f)) % 4];
+    float span = fabsf(base->sensor_position_m[0]) * (0.6f + 0.9f * u[1]);
+    for (int i = 0; i < NNCAR_MAX_SENSORS; ++i) {
+        profile->sensor_position_m[i] = 0.0f;
+    }
+    for (int i = 0; i < profile->sensor_count; ++i) {
+        float q = (float)i / (float)(profile->sensor_count - 1);
+        profile->sensor_position_m[i] = span * (1.0f - 2.0f * q);
+    }
+
+    memset(sc, 0, sizeof(*sc));
+    sc->name = "heldout_random";
+    sc->amp_m = 0.02f + 0.10f * u[2];
+    sc->wavelength_m = 0.9f + 1.8f * u[3];
+    sc->offset_m = -0.025f + 0.05f * u[4];
+    sc->heading_deg = -8.0f + 16.0f * u[5];
+    sc->v_desired = 0.5f + 0.75f * u[6];
+    sc->rail_v = 10.5f + 1.8f * u[7];
+    sc->noise_std = 0.08f;
+    sc->gain_bias = 0.08f;
+    sc->offset_bias = -0.08f + 0.16f * u[8];
+    sc->valid_prob = 0.94f + 0.06f * u[9];
+    sc->sensor_width_scale = 0.6f + 0.9f * u[10];
+    sc->inertia_scale = 0.5f + 1.7f * u[11];
+    sc->plant_deadband = 0.05f + 0.23f * u[12];
+    sc->body_mass_scale = 0.5f + 1.7f * u[13];
+    sc->yaw_inertia_scale = 0.5f + 1.7f * u[14];
+    sc->grip_scale = 0.65f + 0.5f * u[15];
+    sc->missing_a = (u[16] > 0.75f) ? (int)(u[17] * profile->sensor_count) : -1;
+    sc->missing_b = -1;
+    sc->random_track = true;
+    sc->track_seed = seed ^ ((uint32_t)(episode + 1) * 0x9e3779b9u);
+}
+
+static void metrics_merge(metrics_t *dst, const metrics_t *src)
+{
+    dst->lat_sq += src->lat_sq;
+    dst->lat_n += src->lat_n;
+    dst->max_lat = fmaxf(dst->max_lat, src->max_lat);
+    dst->omega_sq += src->omega_sq;
+    dst->domega_sq += src->domega_sq;
+    dst->speed_sum += src->speed_sum;
+    dst->recovery_s += src->recovery_s;
+    dst->out_n += src->out_n;
+    dst->tick_n += src->tick_n;
+    dst->faults |= src->faults;
+}
+
+static void random_r4_check(const nncar_profile_t *p,
+                            const nncar_line_nn_t *r3_nn,
+                            const nncar_line_r4_nn_t *r4_nn,
+                            int episodes, uint32_t seed)
+{
+    metrics_t pid_total = {0};
+    metrics_t r3_total = {0};
+    metrics_t r4_total = {0};
+    for (int ep = 0; ep < episodes; ++ep) {
+        nncar_profile_t instance;
+        scenario_t sc;
+        make_random_eval_case(p, seed, ep, &instance, &sc);
+        metrics_t one;
+        const uint32_t episode_seed = seed + (uint32_t)ep * 7919u + 17u;
+        run_one(&instance, &sc, SRC_PID, NULL, NULL, episode_seed, &one, NULL, NULL);
+        metrics_merge(&pid_total, &one);
+        run_one(&instance, &sc, SRC_MLP, r3_nn, NULL, episode_seed, &one, NULL, NULL);
+        metrics_merge(&r3_total, &one);
+        run_one(&instance, &sc, SRC_R4, NULL, r4_nn, episode_seed, &one, NULL, NULL);
+        metrics_merge(&r4_total, &one);
+    }
+
+    printf("\nHeld-out randomized episodes: %d (same per-episode plant/noise for all controllers)\n",
+           episodes);
+    printf("  PID RMS %.5f m; R3 MLP %.5f m; R4 %.5f m; R4 vs PID %+.1f%%\n",
+           (double)metric_rms(&pid_total), (double)metric_rms(&r3_total),
+           (double)metric_rms(&r4_total),
+           (double)(100.0f * (1.0f - metric_rms(&r4_total) /
+                                       fmaxf(metric_rms(&pid_total), 1.0e-6f))));
+    printf("  max |e|: PID %.4f m; R3 %.4f m; R4 %.4f m; fault unions 0x%x/0x%x/0x%x%s\n",
+           (double)pid_total.max_lat, (double)r3_total.max_lat, (double)r4_total.max_lat,
+           pid_total.faults, r3_total.faults, r4_total.faults,
+           (r4_nn != NULL) ? "" : " [R4 weights unavailable; PID fallback]");
+}
+
+/* Randomised episodes for teacher data: on-policy oracle plus off-policy PID. */
+static void dump_teacher(const nncar_profile_t *p, const char *path,
+                         const char *r4_path, int episodes, uint32_t seed)
+{
+    FILE *fp = (path != NULL) ? fopen(path, "wb") : NULL;
+    FILE *r4_fp = (r4_path != NULL) ? fopen(r4_path, "wb") : NULL;
+    if ((path != NULL && fp == NULL) || (r4_path != NULL && r4_fp == NULL)) {
+        fprintf(stderr, "cannot open teacher output\n");
+        if (fp != NULL) {
+            fclose(fp);
+        }
+        if (r4_fp != NULL) {
+            fclose(r4_fp);
+        }
         return;
     }
 
@@ -528,20 +775,28 @@ static void dump_teacher(const nncar_profile_t *p, const char *path, int episode
     const int32_t rows_per_run = (int32_t)(DURATION_S / p->line_dt_s + 0.5f);
     const int32_t runs_per_ep = 3;   /* oracle, PID, current MLP */
     const int32_t header[4] = {0x4C4E4E31, episodes, rows_per_run, runs_per_ep};
-    if (fwrite(header, sizeof(header), 1, fp) != 1) {
-        fprintf(stderr, "write error on %s\n", path);
-        fclose(fp);
+    const int32_t r4_header[4] = {0x4C4E5231, episodes, rows_per_run, runs_per_ep};
+    if ((fp != NULL && fwrite(header, sizeof(header), 1, fp) != 1) ||
+        (r4_fp != NULL && fwrite(r4_header, sizeof(r4_header), 1, r4_fp) != 1)) {
+        fprintf(stderr, "write error on teacher header\n");
+        if (fp != NULL) {
+            fclose(fp);
+        }
+        if (r4_fp != NULL) {
+            fclose(r4_fp);
+        }
         return;
     }
 
     uint32_t rng = seed | 1u;
     for (int ep = 0; ep < episodes; ++ep) {
-        float u[4];
-        for (int j = 0; j < 4; ++j) {
+        float u[14];
+        for (int j = 0; j < 14; ++j) {
             rng = rng * 1664525u + 1013904223u;
             u[j] = (float)(rng >> 8) * (1.0f / 16777216.0f);
         }
 
+        nncar_profile_t randomized = *p;
         scenario_t sc;
         memset(&sc, 0, sizeof(sc));
         sc.name = "random";
@@ -550,29 +805,67 @@ static void dump_teacher(const nncar_profile_t *p, const char *path, int episode
         sc.offset_m = -0.025f + 0.05f * u[2];
         sc.heading_deg = -6.0f + 12.0f * u[3];
         sc.v_desired = 0.55f + 0.65f * ((float)((ep * 7) % 11) / 10.0f);
-        sc.rail_v = 11.2f + 1.1f * ((float)((ep * 3) % 9) / 8.0f);
-        sc.noise_std = (ep % 4 == 3) ? 0.06f : 0.0f;
-        sc.gain_bias = (ep % 5 == 4) ? 0.10f : 0.0f;
-        sc.offset_bias = (ep % 6 == 5) ? 0.04f : 0.0f;
-        /* Missing channels are drawn from the whole array, not fixed slots. */
-        sc.missing_a = (ep % 7 == 6) ? (ep * 3 + 1) % 8 : -1;
-        sc.missing_b = (ep % 7 == 6) ? (ep * 5 + 4) % 8 : -1;
-        sc.valid_prob = (ep % 7 == 6) ? 0.92f : 1.0f;
+        sc.rail_v = (r4_fp != NULL) ? (10.5f + 1.8f * u[13])
+                                    : (11.2f + 1.1f * ((float)((ep * 3) % 9) / 8.0f));
+        sc.noise_std = (r4_fp != NULL) ? 0.08f : ((ep % 4 == 3) ? 0.06f : 0.0f);
+        sc.gain_bias = (r4_fp != NULL) ? 0.08f : ((ep % 5 == 4) ? 0.10f : 0.0f);
+        sc.offset_bias = (r4_fp != NULL) ? (-0.08f + 0.16f * u[5])
+                                          : ((ep % 6 == 5) ? 0.04f : 0.0f);
+        sc.sensor_width_scale = (r4_fp != NULL) ? (0.6f + 0.9f * u[6]) : 1.0f;
+        sc.inertia_scale = (r4_fp != NULL) ? (0.5f + 1.7f * u[7]) : 1.0f;
+        sc.plant_deadband = (r4_fp != NULL) ? (0.05f + 0.23f * u[8]) : -1.0f;
+        sc.body_mass_scale = (r4_fp != NULL) ? (0.5f + 1.7f * u[10]) : 1.0f;
+        sc.yaw_inertia_scale = (r4_fp != NULL) ? (0.5f + 1.7f * u[11]) : 1.0f;
+        sc.grip_scale = (r4_fp != NULL) ? (0.65f + 0.5f * u[12]) : 1.0f;
+        sc.random_track = (r4_fp != NULL);
+        sc.track_seed = seed ^ ((uint32_t)ep * 0x9e3779b9u) ^ 0x72a59b4du;
+        if (r4_fp != NULL) {
+            static const int sensor_counts[4] = {5, 6, 7, 8};
+            randomized.sensor_count = sensor_counts[ep % 4];
+            float span = fabsf(p->sensor_position_m[0]) * (0.6f + 0.9f * u[4]);
+            for (int i = 0; i < NNCAR_MAX_SENSORS; ++i) {
+                randomized.sensor_position_m[i] = 0.0f;
+            }
+            for (int i = 0; i < randomized.sensor_count; ++i) {
+                float fraction = (float)i / (float)(randomized.sensor_count - 1);
+                randomized.sensor_position_m[i] = span * (1.0f - 2.0f * fraction);
+            }
+        }
+        /* Missing channels are drawn from the active array, not fixed slots. */
+        sc.missing_a = (ep % 7 == 6) ? (ep * 3 + 1) % randomized.sensor_count : -1;
+        sc.missing_b = (ep % 7 == 6) ? (ep * 5 + 4) % randomized.sensor_count : -1;
+        sc.valid_prob = (r4_fp != NULL) ? (0.92f + 0.08f * u[9])
+                                        : ((ep % 7 == 6) ? 0.92f : 1.0f);
 
         metrics_t m;
-        run_one(p, &sc, SRC_ORACLE, NULL, seed + (uint32_t)ep * 3u + 1u, &m, fp);
-        run_one(p, &sc, SRC_PID, NULL, seed + (uint32_t)ep * 3u + 2u, &m, fp);
+        const nncar_profile_t *episode_profile = (r4_fp != NULL) ? &randomized : p;
+        const uint32_t episode_seed = seed + (uint32_t)ep * 7919u + 1u;
+        run_one(episode_profile, &sc, SRC_ORACLE, NULL, NULL,
+                episode_seed, &m, fp, r4_fp);
+        run_one(episode_profile, &sc, SRC_PID, NULL, NULL,
+                episode_seed, &m, fp, r4_fp);
         /* Student-in-the-loop states, relabelled by the oracle (DAgger). */
-        run_one(p, &sc, SRC_MLP, nncar_line_nn_trained(), seed + (uint32_t)ep * 3u + 3u,
-                &m, fp);
+        if (r4_fp != NULL) {
+            run_one(episode_profile, &sc, SRC_R4, NULL, nncar_line_r4_nn_trained(),
+                    episode_seed, &m, fp, r4_fp);
+        } else {
+            run_one(episode_profile, &sc, SRC_MLP, nncar_line_nn_trained(), NULL,
+                    episode_seed, &m, fp, r4_fp);
+        }
     }
 
-    if (ferror(fp)) {
-        fprintf(stderr, "write error on %s\n", path);
+    if ((fp != NULL && ferror(fp)) || (r4_fp != NULL && ferror(r4_fp))) {
+        fprintf(stderr, "write error on teacher output\n");
     }
-    fclose(fp);
-    fprintf(stderr, "teacher: %d episodes, %d rows x %d float32 -> %s\n", episodes,
-            episodes * runs_per_ep * rows_per_run, DUMP_ROW, path);
+    if (fp != NULL) {
+        fclose(fp);
+        fprintf(stderr, "teacher: %d episodes -> %s\n", episodes, path);
+    }
+    if (r4_fp != NULL) {
+        fclose(r4_fp);
+        fprintf(stderr, "R4 teacher: %d episodes, %d rows x %d float32 -> %s\n",
+                episodes, episodes * runs_per_ep * rows_per_run, DUMP_R4_ROW, r4_path);
+    }
 }
 
 static void print_header(void)
@@ -585,16 +878,25 @@ static void print_header(void)
 int main(int argc, char **argv)
 {
     const char *dump_path = NULL;
+    const char *r4_dump_path = NULL;
     int episodes = 120;
+    int random_check_episodes = 0;
     uint32_t seed = 1u;
     bool check = false;
+    bool r4_check = false;
 
     for (int i = 1; i < argc; ++i) {
         const char *a = argv[i];
         if (strcmp(a, "--check") == 0) {
             check = true;
+        } else if (strcmp(a, "--r4-check") == 0) {
+            r4_check = true;
+        } else if (strcmp(a, "--r4-random-check") == 0 && i + 1 < argc) {
+            random_check_episodes = atoi(argv[++i]);
         } else if (strcmp(a, "--dump-teacher") == 0 && i + 1 < argc) {
             dump_path = argv[++i];
+        } else if (strcmp(a, "--dump-r4-teacher") == 0 && i + 1 < argc) {
+            r4_dump_path = argv[++i];
         } else if (strcmp(a, "--episodes") == 0 && i + 1 < argc) {
             episodes = atoi(argv[++i]);
         } else if (strcmp(a, "--seed") == 0 && i + 1 < argc) {
@@ -605,6 +907,8 @@ int main(int argc, char **argv)
             k_oracle_ktheta = (float)atof(argv[++i]);
         } else if (strcmp(a, "--alat") == 0 && i + 1 < argc) {
             k_oracle_alat = (float)atof(argv[++i]);
+        } else if (strcmp(a, "--r4-alpha-ratio") == 0 && i + 1 < argc) {
+            k_r4_alpha_ratio = (float)atof(argv[++i]);
         } else if (strcmp(a, "--trace") == 0) {
             k_trace = true;
             if (i + 1 < argc) {
@@ -613,8 +917,11 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr,
                     "usage: %s [--check] [--dump-teacher out.csv] "
+                    "[--dump-r4-teacher out.bin] [--r4-check] "
+                    "[--r4-random-check N] "
                     "[--episodes N] [--seed S]\n"
                     "          [--ke K] [--ktheta K] [--alat F]  (oracle tuning)\n"
+                    "          [--r4-alpha-ratio R]  (R4 label/output scale)\n"
                     "          [--trace N]  (print scenario N per line tick)\n",
                     argv[0]);
             return 2;
@@ -623,19 +930,21 @@ int main(int argc, char **argv)
 
     const nncar_profile_t *p = nncar_profile_default();
 
-    if (dump_path != NULL) {
-        dump_teacher(p, dump_path, episodes, seed);
+    if (dump_path != NULL || r4_dump_path != NULL) {
+        dump_teacher(p, dump_path, r4_dump_path, episodes, seed);
         return 0;
     }
 
     const nncar_line_nn_t *trained = nncar_line_nn_trained();
     const nncar_line_nn_t *residual_nn = nncar_line_nn_residual_trained();
+    const nncar_line_r4_nn_t *r4_nn = nncar_line_r4_nn_trained();
 
     metrics_t pid[SUITE_COUNT];
     metrics_t mlp[SUITE_COUNT];
     metrics_t res[SUITE_COUNT];
     metrics_t i8[SUITE_COUNT];
     metrics_t orc[SUITE_COUNT];
+    metrics_t r4[SUITE_COUNT];
 
     printf("line A/B (profile %s, line_dt %.3f s, %d scenarios)\n", nncar_profile_name(),
            (double)p->line_dt_s, SUITE_COUNT);
@@ -643,11 +952,14 @@ int main(int argc, char **argv)
 
     for (int i = 0; i < SUITE_COUNT; ++i) {
         const uint32_t s = (uint32_t)(i + 1);
-        run_one(p, &k_suite[i], SRC_PID, NULL, s, &pid[i], NULL);
-        run_one(p, &k_suite[i], SRC_MLP, trained, s, &mlp[i], NULL);
-        run_one(p, &k_suite[i], SRC_RESIDUAL, residual_nn, s, &res[i], NULL);
-        run_one(p, &k_suite[i], SRC_INT8, NULL, s, &i8[i], NULL);
-        run_one(p, &k_suite[i], SRC_ORACLE, NULL, s, &orc[i], NULL);
+        run_one(p, &k_suite[i], SRC_PID, NULL, NULL, s, &pid[i], NULL, NULL);
+        run_one(p, &k_suite[i], SRC_MLP, trained, NULL, s, &mlp[i], NULL, NULL);
+        run_one(p, &k_suite[i], SRC_RESIDUAL, residual_nn, NULL, s, &res[i], NULL, NULL);
+        run_one(p, &k_suite[i], SRC_INT8, NULL, NULL, s, &i8[i], NULL, NULL);
+        run_one(p, &k_suite[i], SRC_ORACLE, NULL, NULL, s, &orc[i], NULL, NULL);
+        if (r4_check) {
+            run_one(p, &k_suite[i], SRC_R4, NULL, r4_nn, s, &r4[i], NULL, NULL);
+        }
 
         printf("%-12s %8.4f %8.4f %8.4f %8.4f %8.4f %8.4f %8.4f %8.4f\n",
                k_suite[i].name, (double)metric_rms(&pid[i]),
@@ -662,9 +974,23 @@ int main(int argc, char **argv)
     const float res_agg = aggregate(res);
     const float i8_agg = aggregate(i8);
     const float orc_agg = aggregate(orc);
+    const float r4_agg = r4_check ? aggregate(r4) : 0.0f;
 
     printf("%-12s %8.4f %8.4f %8.4f %8.4f %8.4f\n", "aggregate", (double)pid_agg,
            (double)mlp_agg, (double)res_agg, (double)i8_agg, (double)orc_agg);
+    if (r4_check) {
+        printf("R4 experimental aggregate RMS: %.5f (%+.1f%% vs PID)%s\n",
+               (double)r4_agg,
+               (double)(100.0f * (1.0f - r4_agg / fmaxf(pid_agg, 1.0e-6f))),
+               (r4_nn != NULL) ? "" : " [weights unavailable; PID fallback]");
+        printf("%-12s %8s %8s %8s %8s\n", "scenario", "r4_rms", "r4_max",
+               "r4_speed", "faults");
+        for (int i = 0; i < SUITE_COUNT; ++i) {
+            printf("%-12s %8.4f %8.4f %8.3f 0x%x\n", k_suite[i].name,
+                   (double)metric_rms(&r4[i]), (double)r4[i].max_lat,
+                   (double)metric_speed(&r4[i]), r4[i].faults);
+        }
+    }
 
     printf("\n%-12s %8s %8s %8s %8s %8s\n", "scenario", "out%_pid", "out%_mlp",
            "spd_pid", "spd_mlp", "recov_s");
@@ -673,6 +999,10 @@ int main(int argc, char **argv)
                (double)(metric_out(&pid[i]) * 100.0f),
                (double)(metric_out(&mlp[i]) * 100.0f), (double)metric_speed(&pid[i]),
                (double)metric_speed(&mlp[i]), (double)pid[i].recovery_s);
+    }
+
+    if (random_check_episodes > 0) {
+        random_r4_check(p, trained, r4_nn, random_check_episodes, seed);
     }
 
     if (!check) {

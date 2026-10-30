@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0.0",
   "name": "line-following-regression",
-  "description": "Deterministic baseline, smooth S-curve, and sensor-dropout cases.",
+  "description": "Deterministic straight, smooth curves, closed oval, and sensor-dropout cases.",
   "cases": [
     {
       "name": "straight-nominal",
@@ -45,6 +45,17 @@
         "rail_v": 12.0,
         "gray_noise_std": 0.04,
         "gray_missing_mask": 4
+      }
+    },
+    {
+      "name": "oval-map",
+      "description": "Closed polyline map supplied at runtime from a JSON file.",
+      "seeds": [23],
+      "scenario": {
+        "duration_s": 24.0,
+        "v_desired_mps": 0.4,
+        "map_file": "simulator/maps/oval.json",
+        "rail_v": 12.0
       }
     }
   ]

@@ -141,6 +141,75 @@ static void test_mlp_contract(const nncar_profile_t *p, float v_max_eff,
     CHECK_NEAR(pid_w[0], pid_w[1], 1.0e-9f);
 }
 
+static void test_r4_contract(const nncar_profile_t *p, float v_max_eff)
+{
+    nncar_profile_t profile = *p;
+    float value[NNCAR_MAX_SENSORS];
+    uint8_t exist[NNCAR_MAX_SENSORS] = {0};
+    uint8_t valid[NNCAR_MAX_SENSORS] = {0};
+    for (int i = 0; i < NNCAR_MAX_SENSORS; ++i) {
+        value[i] = -1.0f;
+        exist[i] = (i < profile.sensor_count) ? 1u : 0u;
+        valid[i] = exist[i];
+    }
+    value[3] = 1.0f;
+    value[4] = 1.0f;
+    nncar_gray_frame_t frame = {value, exist, valid};
+    nncar_line_r4_state_t hist = {0.0f, 0.0f, 0.0f, false};
+    float x[NNCAR_LINE_R4_INPUT_DIM];
+    nncar_line_r4_input(&profile, &frame, &hist, 0.75f, 0.01f, x);
+    CHECK_NEAR(x[0], 0.0f, 1.0e-6f);
+    CHECK_NEAR(x[1], 0.25f, 1.0e-6f);
+    CHECK_NEAR(x[2], powf((0.0075f / 0.0525f), 2.0f), 1.0e-5f);
+    CHECK_NEAR(x[3], 0.0f, 1.0e-9f);
+    CHECK_NEAR(x[4], 0.0f, 1.0e-9f);
+    CHECK_NEAR(x[5], 0.5f, 1.0e-6f);
+
+    hist.prev_omega = 0.75f * profile.omega_ref_radps;
+    value[3] = -1.0f;
+    value[4] = -1.0f;
+    value[0] = 1.0f;
+    nncar_line_r4_input(&profile, &frame, &hist, 1.5f, 0.01f, x);
+    CHECK_NEAR(x[0], 1.0f, 1.0e-6f);
+    CHECK_NEAR(x[3], 1.0f, 1.0e-6f);
+    CHECK_NEAR(x[4], 1.0f, 1.0e-6f);
+    CHECK_NEAR(x[6], 0.75f, 1.0e-6f);
+
+    nncar_line_r4_nn_t nn;
+    nncar_line_r4_nn_zero(&nn);
+    float y[2];
+    nncar_line_r4_eval(&nn, x, y);
+    CHECK_NEAR(y[0], 0.0f, 1.0e-9f);
+    CHECK_NEAR(y[1], 0.0f, 1.0e-9f);
+    nn.b3[0] = 2.0f;
+    nn.b3[1] = -1.0f;
+    nncar_line_r4_eval(&nn, x, y);
+    CHECK_NEAR(y[0], tanhf(2.0f), 1.0e-6f);
+    CHECK_NEAR(y[1], tanhf(-1.0f), 1.0e-6f);
+
+    nncar_line_estimate_t est = {0};
+    est.confidence = 1.0f;
+    est.valid_count = (uint16_t)profile.sensor_count;
+    est.centroid_m = 0.0f;
+    nncar_line_state_t state = {0};
+    nncar_line_reset(&state);
+    nncar_line_set_r4_ctrl(&state, &nn);
+    /* A missing R4 model follows the same deterministic PID fallback. */
+    nncar_line_state_t pid = {0};
+    nncar_line_reset(&pid);
+    nncar_line_state_t no_model = {0};
+    nncar_line_reset(&no_model);
+    nncar_line_set_r4_ctrl(&no_model, NULL);
+    nncar_twist_t a = nncar_line_step_with_speed(&profile, &pid, &frame, &est,
+                                                 0.9f, 0.5f, v_max_eff, 0.0f,
+                                                 profile.line_dt_s);
+    nncar_twist_t b = nncar_line_step_with_speed(&profile, &no_model, &frame, &est,
+                                                 0.9f, 0.5f, v_max_eff, 0.0f,
+                                                 profile.line_dt_s);
+    CHECK_NEAR(a.v, b.v, 1.0e-9f);
+    CHECK_NEAR(a.omega, b.omega, 1.0e-9f);
+}
+
 int main(void)
 {
     const nncar_profile_t *p = nncar_profile_default();
@@ -229,6 +298,7 @@ int main(void)
     CHECK_NEAR(zero.omega, 0.0f, 1.0e-9f);
 
     test_mlp_contract(p, v_max_eff, &frame, &est);
+    test_r4_contract(p, v_max_eff);
 
     TEST_END();
 }

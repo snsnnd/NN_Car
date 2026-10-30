@@ -44,6 +44,7 @@ DEFAULT_SCENARIO: dict[str, Any] = {
     "gray_gain": 1.0,
     "gray_valid_prob": 1.0,
     "gray_missing_mask": 0,
+    "map_file": None,
 }
 
 CLI_ARGUMENTS = {
@@ -63,7 +64,6 @@ CLI_ARGUMENTS = {
     "gray_offset": "--gray-offset",
     "gray_gain": "--gray-gain",
     "gray_valid_prob": "--gray-valid-prob",
-    "gray_missing_mask": "--gray-missing-mask",
 }
 
 
@@ -84,6 +84,16 @@ def _validate_scenario(value: Any, where: str) -> dict[str, Any]:
 
     scenario = DEFAULT_SCENARIO | value
     for key, item in scenario.items():
+        if key == "map_file":
+            if item is not None and (not isinstance(item, str) or not item.strip()):
+                raise PlanError(f"{where}.map_file must be a non-empty path string or null")
+            if isinstance(item, str):
+                map_path = Path(item)
+                if not map_path.is_absolute():
+                    map_path = ROOT / map_path
+                if not map_path.is_file():
+                    raise PlanError(f"{where}.map_file does not exist: {item}")
+            continue
         if key == "motor_torque_gain_nm" and item is None:
             continue
         expected_integer = key == "gray_missing_mask"
@@ -220,8 +230,33 @@ def _command_for_run(sim_binary: Path, csv_path: Path, manifest_path: Path,
         if value is None:
             continue
         command.extend((cli_name, _format_arg(value)))
+    map_file = scenario["map_file"]
+    if map_file is not None:
+        command.extend(("--map-file", map_file))
     command.extend(("--seed", str(seed)))
     return command
+
+
+def _nearest_map_track(x: float, y: float,
+                       segments: list[list[float]]) -> tuple[float, float]:
+    best_d2 = math.inf
+    best_lateral = 0.0
+    best_heading = 0.0
+    for x0, y0, x1, y1 in segments:
+        dx, dy = x1 - x0, y1 - y0
+        length2 = dx * dx + dy * dy
+        if length2 <= 1.0e-12:
+            continue
+        t = max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / length2))
+        ex, ey = x - (x0 + t * dx), y - (y0 + t * dy)
+        distance2 = ex * ex + ey * ey
+        if distance2 < best_d2:
+            best_d2 = distance2
+            best_lateral = (dx * ey - dy * ex) / math.sqrt(length2)
+            best_heading = math.atan2(dy, dx)
+    if not math.isfinite(best_d2):
+        raise ValueError("map manifest has no valid segments")
+    return best_lateral, best_heading
 
 
 def _compute_metrics(csv_path: Path, scenario: dict[str, Any]) -> dict[str, Any]:
@@ -237,15 +272,23 @@ def _compute_metrics(csv_path: Path, scenario: dict[str, Any]) -> dict[str, Any]
     first_time: int | None = None
     last_time: int | None = None
     track_scale = 2.0 * math.pi / scenario["wavelength_m"]
+    manifest_path = csv_path.with_suffix(".manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    map_data = manifest.get("map")
+    map_segments = map_data.get("segments") if isinstance(map_data, dict) else None
 
     with csv_path.open("r", encoding="utf-8", newline="") as file:
         for row in csv.DictReader(file):
             t_us = int(row["t_us"])
             x, y, theta = float(row["x"]), float(row["y"]), float(row["theta"])
-            lateral = y - scenario["amp_m"] * math.sin(track_scale * x)
-            slope = scenario["amp_m"] * track_scale * math.cos(track_scale * x)
-            heading = math.atan2(math.sin(theta - math.atan(slope)),
-                                 math.cos(theta - math.atan(slope)))
+            if map_segments is not None:
+                lateral, reference_heading = _nearest_map_track(x, y, map_segments)
+            else:
+                lateral = y - scenario["amp_m"] * math.sin(track_scale * x)
+                slope = scenario["amp_m"] * track_scale * math.cos(track_scale * x)
+                reference_heading = math.atan(slope)
+            heading = math.atan2(math.sin(theta - reference_heading),
+                                 math.cos(theta - reference_heading))
             max_lateral = max(max_lateral, abs(lateral))
             max_heading = max(max_heading, abs(heading))
             lateral_sq += lateral * lateral

@@ -74,7 +74,7 @@ bool nncar_sim_session_step(nncar_sim_session_t *session, nncar_log_row_t *row)
         session->have_edge = true;
     }
 
-    float lateral = sim->y - nncar_sim_track_y(sim->x, sim);
+    float lateral = nncar_sim_lateral_error(sim);
     if (fabsf(lateral) > session->result.max_lat_m) {
         session->result.max_lat_m = fabsf(lateral);
     }

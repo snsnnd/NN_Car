@@ -16,12 +16,14 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import gen_line_nn  # noqa: E402
+import gen_line_r4_nn  # noqa: E402
 import gen_motor_nn  # noqa: E402
 import gen_profile  # noqa: E402
 import golden  # noqa: E402
 import identify_motor  # noqa: E402
 import motor_teacher  # noqa: E402
 import train_motor_nn  # noqa: E402
+import train_line_r4  # noqa: E402
 import validate_log  # noqa: E402
 
 ROOT = HERE.parents[1]
@@ -350,6 +352,48 @@ def test_line_nn_generation(tmp: Path) -> None:
             pass
 
 
+def test_line_r4_training_and_generation(tmp: Path) -> None:
+    rng = np.random.default_rng(17)
+    episodes, rows_per_run, runs_per_episode = 4, 5, 2
+    rows = episodes * rows_per_run * runs_per_episode
+    body = rng.uniform(-0.8, 0.8, (rows, train_line_r4.ROW_DIM)).astype(np.float32)
+    body[:, 7:9] = np.tanh(body[:, 7:9])
+    body[:, 9:12] = np.clip(body[:, 9:12], -1.0, 1.0)
+    dump = tmp / "line_r4_teacher.bin"
+    header = np.asarray([train_line_r4.MAGIC, episodes, rows_per_run,
+                         runs_per_episode], dtype=np.int32).view(np.float32)
+    np.concatenate((header, body.ravel())).tofile(dump)
+
+    x, y, priv, pd_baseline, ids, count = train_line_r4.load_dump(dump)
+    check(count == episodes and x.shape == (rows, 7) and y.shape == (rows, 2),
+          "line_r4: binary teacher dimensions")
+    check(priv.shape == (rows, 2) and np.unique(ids).size == episodes,
+          "line_r4: privileged targets or episode IDs")
+    train_ids, val_ids = train_line_r4.split_episodes(ids, seed=17)
+    train_mask = np.isin(ids, train_ids)
+    val_mask = np.isin(ids, val_ids)
+    net = train_line_r4.init_net(np.random.default_rng(17))
+    net = train_line_r4.train(
+        net, x[train_mask], y[train_mask], priv[train_mask], pd_baseline[train_mask],
+        x[val_mask], y[val_mask], priv[val_mask], pd_baseline[val_mask],
+        2, 17, 0.2, 0.02, 0.5, 1.0e-3)
+    control, privileged = train_line_r4.forward(net, x[val_mask])
+    check(np.isfinite(control).all() and np.isfinite(privileged).all(),
+          "line_r4: training produced non-finite predictions")
+
+    weights_path = tmp / "line_r4_weights.json"
+    metrics = {"val_control_mse": float(np.mean((control - y[val_mask]) ** 2))}
+    train_line_r4.export_json(weights_path, net, 17, 2, int(train_mask.sum()),
+                              metrics, 0.2, 0.02, 0.5)
+    doc, weights = gen_line_r4_nn.load_weights(weights_path)
+    params = sum(int(w.size) for w in weights.values())
+    check(params == 282, f"line_r4: deployment parameters {params} != 282")
+    source = gen_line_r4_nn.render(doc, weights, str(weights_path))
+    check("nncar_line_r4_nn_trained" in source, "line_r4: generated accessor missing")
+    first_row = ", ".join(gen_line_r4_nn.cfloat(v) for v in weights["w1"].T[0])
+    check("{ " + first_row + " }," in source, "line_r4: w1 was not transposed")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -357,6 +401,7 @@ def main() -> int:
         test_motor_nn_generation(tmp)
         test_motor_training_splits()
         test_line_nn_generation(tmp)
+        test_line_r4_training_and_generation(tmp)
         test_validation(tmp)
         test_golden(tmp)
         test_identification(tmp)

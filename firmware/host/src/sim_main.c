@@ -1,4 +1,5 @@
 #include "nncar/log_csv.h"
+#include "nncar/map_file.h"
 #include "nncar/sim.h"
 #include "nncar/sim_runner.h"
 
@@ -10,6 +11,7 @@
 typedef struct {
     const char *out;
     const char *manifest;
+    const char *map_file;
     float duration_s;
     float v_desired;
     float offset_m;
@@ -29,6 +31,8 @@ typedef struct {
     uint32_t seed;
     uint32_t gray_missing_mask;
     int motor_torque_gain_set;
+    int offset_set;
+    int heading_set;
 } options_t;
 
 typedef struct {
@@ -45,7 +49,8 @@ static void usage(const char *argv0)
             "          [--gray-noise 0] [--gray-offset 0] [--gray-gain 1]\n"
             "          [--gray-valid-prob 1] [--gray-missing-mask 0]\n"
             "          [--motor-inertia 2e-5] [--motor-damping 4e-4]\n"
-            "          [--motor-torque-gain <derived from profile>]\n",
+            "          [--motor-torque-gain <derived from profile>]\n"
+            "          [--map-file simulator/maps/oval.json]\n",
             argv0);
 }
 
@@ -87,6 +92,7 @@ static int parse(int argc, char **argv, options_t *o)
 {
     o->out = NULL;
     o->manifest = NULL;
+    o->map_file = NULL;
     o->duration_s = 8.0f;
     o->v_desired = 0.9f;
     o->offset_m = 0.02f;
@@ -106,6 +112,8 @@ static int parse(int argc, char **argv, options_t *o)
     o->seed = 0u;
     o->gray_missing_mask = 0u;
     o->motor_torque_gain_set = 0;
+    o->offset_set = 0;
+    o->heading_set = 0;
 
     for (int i = 1; i < argc; ++i) {
         const char *a = argv[i];
@@ -113,14 +121,18 @@ static int parse(int argc, char **argv, options_t *o)
             o->out = argv[++i];
         } else if (strcmp(a, "--manifest") == 0 && i + 1 < argc) {
             o->manifest = argv[++i];
+        } else if (strcmp(a, "--map-file") == 0 && i + 1 < argc) {
+            o->map_file = argv[++i];
         } else if (strcmp(a, "--duration") == 0 && i + 1 < argc) {
             if (parse_float_arg(argc, argv, &i, &o->duration_s) != 0) goto invalid;
         } else if (strcmp(a, "--v") == 0 && i + 1 < argc) {
             if (parse_float_arg(argc, argv, &i, &o->v_desired) != 0) goto invalid;
         } else if (strcmp(a, "--offset") == 0 && i + 1 < argc) {
             if (parse_float_arg(argc, argv, &i, &o->offset_m) != 0) goto invalid;
+            o->offset_set = 1;
         } else if (strcmp(a, "--heading-deg") == 0 && i + 1 < argc) {
             if (parse_float_arg(argc, argv, &i, &o->heading_deg) != 0) goto invalid;
+            o->heading_set = 1;
         } else if (strcmp(a, "--amp") == 0 && i + 1 < argc) {
             if (parse_float_arg(argc, argv, &i, &o->amp_m) != 0) goto invalid;
         } else if (strcmp(a, "--wavelength") == 0 && i + 1 < argc) {
@@ -174,7 +186,29 @@ invalid:
     return -1;
 }
 
-static void write_manifest(const char *path, const options_t *o, const nncar_profile_t *p)
+static void write_manifest_map(FILE *fp, const nncar_map_t *map)
+{
+    if (map == NULL) {
+        fputs("null", fp);
+        return;
+    }
+    fprintf(fp,
+            "{\"name\":\"%s\",\"version\":\"%s\",\"line_width_m\":%.7g,"
+            "\"start_x_m\":%.7g,\"start_y_m\":%.7g,\"start_theta_rad\":%.7g,"
+            "\"segments\":[",
+            map->name, map->version, (double)map->line_width_m,
+            (double)map->start_x, (double)map->start_y, (double)map->start_theta);
+    for (size_t i = 0u; i < map->segment_count; ++i) {
+        const nncar_map_seg_t *seg = &map->segments[i];
+        fprintf(fp, "%s[%.7g,%.7g,%.7g,%.7g]", i == 0u ? "" : ",",
+                (double)seg->x0, (double)seg->y0,
+                (double)seg->x1, (double)seg->y1);
+    }
+    fputs("]}", fp);
+}
+
+static void write_manifest(const char *path, const options_t *o,
+                           const nncar_profile_t *p, const nncar_map_t *map)
 {
     FILE *fp = fopen(path, "w");
 
@@ -204,19 +238,24 @@ static void write_manifest(const char *path, const options_t *o, const nncar_pro
             "    \"wavelength_m\": %.3f,\n"
             "    \"rail_v\": %.2f\n"
             "  },\n"
-            "  \"vehicle\": {\n"
-            "    \"wheel_radius_m\": %.6f,\n"
-            "    \"track_width_m\": %.6f,\n"
-            "    \"sensor_count\": %d,\n"
-            "    \"sensor_to_axle_m\": %.6f,\n"
-            "    \"sensor_position_m\": [",
+            "  \"map\": ",
             nncar_profile_name(), nncar_profile_version(),
             nncar_profile_is_verified() ? "true" : "false",
             (unsigned)o->seed, (commit != NULL) ? commit : "unknown", (double)p->motor_dt_s,
             (double)p->line_dt_s, (double)o->duration_s, (double)o->v_desired,
             (double)o->offset_m, (double)o->heading_deg, (double)o->amp_m,
-            (double)o->wavelength_m, (double)o->rail_v, (double)p->wheel_radius_m,
-            (double)p->track_width_m, p->sensor_count, (double)p->sensor_to_axle_m);
+            (double)o->wavelength_m, (double)o->rail_v);
+
+    write_manifest_map(fp, map);
+    fprintf(fp,
+            ",\n  \"vehicle\": {\n"
+            "    \"wheel_radius_m\": %.6f,\n"
+            "    \"track_width_m\": %.6f,\n"
+            "    \"sensor_count\": %d,\n"
+            "    \"sensor_to_axle_m\": %.6f,\n"
+            "    \"sensor_position_m\": [",
+            (double)p->wheel_radius_m, (double)p->track_width_m,
+            p->sensor_count, (double)p->sensor_to_axle_m);
 
     for (int i = 0; i < p->sensor_count; ++i) {
         fprintf(fp, "%s%.6f", (i == 0) ? "" : ", ", (double)p->sensor_position_m[i]);
@@ -228,7 +267,7 @@ static void write_manifest(const char *path, const options_t *o, const nncar_pro
             "]\n"
             "  },\n"
             "  \"simulation\": {\n"
-            "    \"track_model\": \"sine_centerline\",\n"
+            "    \"track_model\": \"%s\",\n"
             "    \"line_width_m\": %.6f,\n"
             "    \"motor_model\": \"first_order_dc_motor\",\n"
             "    \"motor_inertia_kgm2\": %.9g,\n"
@@ -243,7 +282,9 @@ static void write_manifest(const char *path, const options_t *o, const nncar_pro
             "    \"gray_missing_mask\": %u\n"
             "  }\n"
             "}\n",
-            (double)o->line_width_m, (double)o->motor_inertia_kgm2,
+            (map != NULL) ? "polyline_map" : "sine_centerline",
+            (double)(map != NULL ? map->line_width_m : o->line_width_m),
+            (double)o->motor_inertia_kgm2,
             (double)o->motor_damping_nms, (double)torque_gain,
             (double)o->motor_stiction_nm, (double)o->gray_noise_std,
             (double)o->gray_offset, (double)o->gray_gain,
@@ -268,6 +309,17 @@ int main(int argc, char **argv)
     }
 
     const nncar_profile_t *p = nncar_profile_default();
+    nncar_map_t map;
+    memset(&map, 0, sizeof(map));
+    const nncar_map_t *map_ptr = NULL;
+    if (opt.map_file != NULL) {
+        char error[160];
+        if (nncar_map_load_json(opt.map_file, &map, error, sizeof(error)) != 0) {
+            fprintf(stderr, "cannot load map '%s': %s\n", opt.map_file, error);
+            return 2;
+        }
+        map_ptr = &map;
+    }
 
     fprintf(stderr, "profile: %s v%s verified=%s\n", nncar_profile_name(),
             nncar_profile_version(), nncar_profile_is_verified() ? "true" : "false");
@@ -276,11 +328,21 @@ int main(int argc, char **argv)
     }
 
     nncar_sim_t sim;
-    nncar_sim_init(&sim, p, 0.0f, opt.offset_m, opt.heading_deg * NNCAR_PI / 180.0f,
-                   opt.rail_v);
+    float x0 = 0.0f;
+    float y0 = opt.offset_m;
+    float theta0 = opt.heading_deg * NNCAR_PI / 180.0f;
+    if (map_ptr != NULL) {
+        if (!opt.offset_set) opt.offset_m = 0.0f;
+        if (!opt.heading_set) opt.heading_deg = 0.0f;
+        theta0 = map_ptr->start_theta + opt.heading_deg * NNCAR_PI / 180.0f;
+        x0 = map_ptr->start_x - sinf(theta0) * opt.offset_m;
+        y0 = map_ptr->start_y + cosf(theta0) * opt.offset_m;
+    }
+    nncar_sim_init(&sim, p, x0, y0, theta0, opt.rail_v);
+    nncar_sim_set_map(&sim, map_ptr);
     sim.track_amp_m = opt.amp_m;
     sim.track_wavelength_m = opt.wavelength_m;
-    sim.line_width_m = opt.line_width_m;
+    sim.line_width_m = map_ptr != NULL ? map_ptr->line_width_m : opt.line_width_m;
     sim.inertia_kgm2 = opt.motor_inertia_kgm2;
     sim.damping_nms = opt.motor_damping_nms;
     sim.torque_gain_nm = opt.motor_torque_gain_set ? opt.motor_torque_gain_nm :
@@ -298,6 +360,7 @@ int main(int argc, char **argv)
     nncar_logger_t logger;
     if (nncar_log_open(&logger, opt.out) != 0) {
         fprintf(stderr, "cannot open %s\n", opt.out);
+        nncar_map_free(&map);
         return 1;
     }
     nncar_log_write_header(&logger);
@@ -314,7 +377,7 @@ int main(int argc, char **argv)
     nncar_log_close(&logger);
 
     if (opt.manifest != NULL) {
-        write_manifest(opt.manifest, &opt, p);
+        write_manifest(opt.manifest, &opt, p, map_ptr);
     }
 
     fprintf(stderr,
@@ -324,5 +387,6 @@ int main(int argc, char **argv)
             (double)res.final_lat_m, (double)res.max_lat_m, (double)res.max_omega,
             res.fault_union, opt.out);
 
+    nncar_map_free(&map);
     return 0;
 }
